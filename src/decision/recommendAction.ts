@@ -6,8 +6,8 @@ import { getRequestInfo } from '../battle/requestStats.js';
 import type { RandbatsRepository } from '../randbats/data.js';
 import { buildField } from '../calc/damage.js';
 import { buildYourCalcPokemon, buildOpponentScenarios, buildMatchup } from '../analysis/analyzer.js';
-import type { AnalysisReport, PokemonMatchup } from '../analysis/types.js';
-import { availableTurns, proposedOpponentTurns, isFavorable } from './availableTurns.js';
+import type { AnalysisReport, MoveDamageReport, PokemonMatchup } from '../analysis/types.js';
+import { availableTurns, availableTurnsAfterSwitch, proposedOpponentTurns, isFavorable } from './availableTurns.js';
 import { selfBoostsFor, bestAttackDamagePercent } from './boostedDamage.js';
 import type { ActionEvaluation, RecommendedAction } from './types.js';
 
@@ -87,16 +87,34 @@ function estimateEntryHazardPercent(sideConditions: Record<string, { level?: num
   return percent;
 }
 
+/** A single move's realistic expected damage roll -- the same fallback the
+ * dashboard's damage bars already use (mostLikelyPercent when known, else
+ * the middle of the min/max range) -- as opposed to maxPercent, which is
+ * that move's own ceiling roll, not what it typically does. */
+function expectedDamagePercent(m: MoveDamageReport): number {
+  return m.mostLikelyPercent ?? (m.minPercent + m.maxPercent) / 2;
+}
+
 /** Bench matchups (already fully computed by the analyzer) -> one 'switch'
  * candidate per non-fainted bench Pokemon. Shared between recommendAction
  * (both actives alive, weighed against staying in) and recommendForcedSwitch
- * (your active just fainted, a switch is the only legal choice). */
-export function buildSwitchCandidates(bench: PokemonMatchup[], mySideObj: ClientSide, opponentHpPercent: number): ActionEvaluation[] {
+ * (your active just fainted, a switch is the only legal choice).
+ *
+ * `expectedFirstHitPercent` models the turn spent switching: the opponent's
+ * move that turn was chosen against whatever you had active *before* the
+ * switch (they can't react to it yet), so the incoming Pokemon's first hit
+ * is realistically their most threatening move's *expected* damage against
+ * your current mon -- not a fresh worst-case pick against the bench mon.
+ * Omit it (as recommendForcedSwitch does) when there's no "current mon" to
+ * have baited that move in the first place -- a forced switch after a
+ * faint isn't exposed to an extra hit that same turn at all, so every turn
+ * uses the ongoing worst-case-against-the-new-mon rate from the start. */
+export function buildSwitchCandidates(bench: PokemonMatchup[], mySideObj: ClientSide, opponentHpPercent: number, expectedFirstHitPercent?: number): ActionEvaluation[] {
   return bench.map((b) => {
     const theirWorstCaseVsBench = Math.max(0, ...b.opponentMovesVsYou.map((m) => m.maxPercent));
     const hazardChip = estimateEntryHazardPercent(mySideObj.sideConditions as any);
     const hpAfterHazards = Math.max(0, b.yours.hpPercent - hazardChip);
-    const myTurns = availableTurns(hpAfterHazards, theirWorstCaseVsBench);
+    const myTurns = availableTurnsAfterSwitch(hpAfterHazards, expectedFirstHitPercent ?? theirWorstCaseVsBench, theirWorstCaseVsBench);
     const bestSwitchInAttack = Math.max(0, ...b.yourMovesVsOpponent.filter((m) => m.confirmed).map((m) => m.minPercent));
     const theirTurns = proposedOpponentTurns(opponentHpPercent, 0, bestSwitchInAttack);
     return {
@@ -139,6 +157,9 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
 
   const theirWorstCaseVsMe = Math.max(0, ...matchup.opponentMovesVsYou.map((m) => m.maxPercent));
   const myCurrentAvailableTurns = availableTurns(matchup.yours.hpPercent, theirWorstCaseVsMe);
+  // For switch candidates below: the move they're expected to open a switch
+  // with -- see buildSwitchCandidates' doc comment.
+  const expectedFirstHitVsMe = Math.max(0, ...matchup.opponentMovesVsYou.map(expectedDamagePercent));
   // "Most likely" speed, not worst/best case -- a single deterministic
   // recommendation needs one answer, and most-likely is the pragmatic
   // choice among the three the analyzer already computes.
@@ -228,7 +249,7 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
   }
 
   // --- Switch: bench matchups are already fully computed by the analyzer. ---
-  candidates.push(...buildSwitchCandidates(report.bench, mySideObj, matchup.opponent.hpPercent));
+  candidates.push(...buildSwitchCandidates(report.bench, mySideObj, matchup.opponent.hpPercent, expectedFirstHitVsMe));
 
   if (candidates.length === 0) return undefined;
 

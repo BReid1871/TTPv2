@@ -19,6 +19,24 @@ export function availableTurns(hpPercent: number, worstCaseDamagePercent: number
 }
 
 /**
+ * Same idea as availableTurns, but for switching in: the turn you choose to
+ * switch, the opponent's move is already locked in against whatever you had
+ * active *before* the switch -- they don't get to react to it until their
+ * next turn. So the incoming Pokemon's first hit is realistically whatever
+ * they were expected to throw at your outgoing Pokemon (`firstHitPercent`),
+ * not a fresh worst-case pick against the mon that's switching in; only
+ * every turn after that (once they've seen and can react to the switch)
+ * uses the ongoing rate against the new mon (`subsequentHitPercent`).
+ */
+export function availableTurnsAfterSwitch(hpPercent: number, firstHitPercent: number, subsequentHitPercent: number): number {
+  if (hpPercent <= 0) return 0;
+  if (firstHitPercent <= 0) return availableTurns(hpPercent, subsequentHitPercent);
+  const afterFirstHit = hpPercent - firstHitPercent;
+  if (afterFirstHit <= 0) return 0; // doesn't survive the switch-in hit at all
+  return 1 + availableTurns(afterFirstHit, subsequentHitPercent);
+}
+
+/**
  * How many more turns, from this point, it takes to finish the opponent off
  * -- the general formula unifying every action kind (see the plan): an
  * attack this turn reduces `theirHpPercent` directly by

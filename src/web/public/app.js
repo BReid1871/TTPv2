@@ -192,6 +192,22 @@ function fmtTurns(n) {
   return n === Infinity ? '∞' : String(n);
 }
 
+// recommendedAction.action/.alternatives together always include exactly
+// one 'switch' candidate per bench Pokemon (see recommendAction.ts), so the
+// per-bench-mon "available turns" numbers already exist server-side --
+// just look up the one matching this species rather than recomputing.
+function switchEvalFor(rec, species) {
+  if (!rec) return undefined;
+  const label = `Switch to ${species}`;
+  if (rec.action.label === label) return rec.action;
+  return rec.alternatives.find((alt) => alt.kind === 'switch' && alt.label === label);
+}
+
+function renderSwitchTurns(ev) {
+  if (!ev) return '';
+  return ` &middot; <span class="${ev.favorable ? 'faster' : 'slower'}">switch in: mine ${fmtTurns(ev.myAvailableTurns)} turns vs. theirs ${fmtTurns(ev.opponentProposedAvailableTurns)} turns</span>`;
+}
+
 function renderRecommendedAction(rec) {
   if (!rec) return '';
   const a = rec.action;
@@ -226,7 +242,8 @@ function renderReport(report) {
   if (report.bench.length) {
     html += `<div class="card"><h2 class="card-title">Your bench vs. current opponent</h2>`;
     for (const b of report.bench) {
-      html += `<details class="bench-item"><summary><span class="mon-name">${esc(b.yours.species)}${b.yours.chargingMove ? `<span class="charge-chip">${esc(chargeChipLabel(b.yours.chargingMove))}</span>` : ''}</span><span class="mon-sub">${b.yours.hpPercent}% HP &middot; ${b.speed.youAreFasterMostLikely ? 'likely faster' : 'likely slower'}</span></summary>${renderMatchup(b, 'Bench')}</details>`;
+      const switchEv = switchEvalFor(report.recommendedAction, b.yours.species);
+      html += `<details class="bench-item"><summary><span class="mon-name">${esc(b.yours.species)}${b.yours.chargingMove ? `<span class="charge-chip">${esc(chargeChipLabel(b.yours.chargingMove))}</span>` : ''}</span><span class="mon-sub">${b.yours.hpPercent}% HP &middot; ${b.speed.youAreFasterMostLikely ? 'likely faster' : 'likely slower'}${renderSwitchTurns(switchEv)}</span></summary>${renderMatchup(b, 'Bench')}</details>`;
     }
     html += `</div>`;
   }
