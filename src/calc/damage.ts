@@ -1,5 +1,6 @@
 import { Generations, Pokemon as CalcPokemon, Move as CalcMove, Field as CalcField, Side as CalcSide, calculate } from '@smogon/calc';
 import type { Battle, Side as ClientSide } from '@pkmn/client';
+import { toID } from '@pkmn/data';
 import { DEFAULT_EVS, DEFAULT_IVS, type StatsTable } from '../randbats/setTracker.js';
 
 export const calcGen = Generations.get(9);
@@ -191,20 +192,47 @@ export interface MoveDamageResult {
   koChance?: string;
 }
 
+/** For a variable-hit move (multihit: [min, max], e.g. Bullet Seed's 2-5),
+ * @smogon/calc's Move defaults to a single fixed hit count (3, the
+ * statistical mean) unless told otherwise -- which understates both the
+ * best case (as few as `min` hits) and, more importantly for judging a KO,
+ * the worst case (as many as `max` hits). Returns the real [min, max] hit
+ * counts to compute against, or undefined for a fixed-hit-count move
+ * (Double Kick, Triple Kick, ...) or one with no multi-hit at all. */
+function variableHitRange(moveName: string): [number, number] | undefined {
+  const multihit = calcGen.moves.get(toID(moveName))?.multihit;
+  return Array.isArray(multihit) ? [multihit[0], multihit[1]] : undefined;
+}
+
 /** Computes min/max damage as a percentage of the defender's max HP. */
 export function computeMoveDamage(attacker: CalcPokemon, defender: CalcPokemon, moveName: string, field: CalcField): MoveDamageResult | undefined {
   try {
     const move = new CalcMove(calcGen, moveName);
     if (move.category === 'Status' || move.bp === 0) return undefined;
     const result = calculate(calcGen, attacker, defender, move, field);
-    const [min, max] = result.range();
     const maxHp = defender.maxHP();
+
+    const hitRange = variableHitRange(moveName);
+    let min: number;
+    let max: number;
+    if (hitRange) {
+      const [minHits, maxHits] = hitRange;
+      min = calculate(calcGen, attacker, defender, new CalcMove(calcGen, moveName, { hits: minHits } as any), field).range()[0];
+      max = calculate(calcGen, attacker, defender, new CalcMove(calcGen, moveName, { hits: maxHits } as any), field).range()[1];
+    } else {
+      [min, max] = result.range();
+    }
     const minPercent = Math.min(100, (min / maxHp) * 100);
     const maxPercent = Math.min(100, (max / maxHp) * 100);
     // result.kochance() (and .desc(), which we don't use) throws for a
     // guaranteed-0-damage hit (e.g. a full type immunity) instead of
     // reporting "won't KO" -- that's a real outcome, not a calc error, so
     // it must not fall through to the outer catch and drop the whole move.
+    // For a variable-hit move, this still reflects the default (mean-hit-
+    // count) scenario rather than the widened range above -- matches how
+    // koChance is described everywhere else in the app (the single most
+    // representative case), rather than mixing a worst-case KO claim with
+    // a best-case-anchored minPercent.
     let koChance: string | undefined;
     try {
       koChance = result.kochance().text;
