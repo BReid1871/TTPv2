@@ -5,167 +5,326 @@
 // narrowSet/buildSetCandidates (src/randbats/setTracker.ts) and damage/speed
 // calc (src/calc/damage.ts, src/calc/speed.ts) against real sets pulled from
 // the live randbats data set — not hand-typed guesses.
+//
+// Room 1 is a 4-turn slice (demoTurnsRoom1 below) so the turn-progress
+// control in demo.js can step through how the opponent read narrows as more
+// of Great Tusk's set gets revealed: turn 1 has nothing revealed (3 possible
+// roles), turn 2 reveals Rapid Spin (shared by all 3 roles, so it doesn't
+// narrow anything), turn 3 reveals Headlong Rush (unique to the "Bulky
+// Support" role, narrowing 3 roles -> 1 and the item guess from a 5-way
+// split to a clean 4-way), and turn 4 reveals the held item via its
+// end-of-turn Leftovers recovery message, fully confirming the set — at
+// which point the damage/speed *ranges* collapse into single numbers
+// because there's no longer any uncertainty left to average over.
 
 const demoRooms = [
   { roomid: 'battle-gen9randombattle-1', title: 'vs. Guest 1029884' },
   { roomid: 'battle-gen9randombattle-2', title: 'vs. Guest 4471002' },
 ];
 
-const demoReports = new Map();
-
-const tuskOpponentInfo = {
-  ident: 'p2a: Great Tusk', species: 'Great Tusk', level: 77, hpPercent: 62, status: 'par', fainted: false, isActive: true,
-  dataFound: true,
-  // Headlong Rush is only in the "Bulky Support" role's movepool, so revealing
-  // it narrows Great Tusk down to exactly one role out of its three.
-  candidateRoles: ['Bulky Support'],
-  ability: { known: 'Protosynthesis', possible: [] },
-  item: { possible: [
-    { name: 'Assault Vest', probability: 0.25 },
-    { name: 'Choice Band', probability: 0.25 },
-    { name: 'Choice Scarf', probability: 0.25 },
-    { name: 'Leftovers', probability: 0.25 },
-  ] },
-  teraType: { possible: [
-    { name: 'Ground', probability: 0.5 },
-    { name: 'Steel', probability: 0.5 },
-  ] },
-  revealedMoves: ['Rapid Spin', 'Headlong Rush'],
-  possibleRemainingMoves: [
-    { name: 'Close Combat', probability: 0.4 },
-    { name: 'Ice Spinner', probability: 0.4 },
-    { name: 'Knock Off', probability: 0.4 },
-    { name: 'Stealth Rock', probability: 0.4 },
-    { name: 'Stone Edge', probability: 0.4 },
-  ],
-};
-
-demoReports.set('battle-gen9randombattle-1', {
-  roomid: 'battle-gen9randombattle-1',
-  turn: 8,
-  generatedAt: Date.now(),
-  format: '[Gen 9] Random Battle',
-  waiting: false,
-  active: {
-    yours: { ident: 'p1a: Kingambit', species: 'Kingambit', hpPercent: 100, status: undefined, fainted: false, isActive: true },
-    opponent: tuskOpponentInfo,
-    // Kingambit's real level-74 Random Battle set (Supreme Overlord, Leftovers)
-    // vs Great Tusk's real level-77 spread, across all 4 item candidates.
-    yourMovesVsOpponent: [
-      { name: 'Iron Head', minPercent: 20.7, maxPercent: 24.7, mostLikelyPercent: 22.7, koChance: 'guaranteed 5HKO', confirmed: true },
-      { name: 'Kowtow Cleave', minPercent: 10.9, maxPercent: 13.2, mostLikelyPercent: 12, koChance: 'possible 8HKO', confirmed: true },
-      { name: 'Sucker Punch', minPercent: 8.9, maxPercent: 10.9, mostLikelyPercent: 9.9, koChance: undefined, confirmed: true },
-    ],
-    // Close Combat is unconfirmed but devastating: Fighting is super
-    // effective against both of Kingambit's types (Dark and Steel), for 4x
-    // combined, plus Great Tusk's own Fighting STAB -- a guaranteed OHKO,
-    // not the "possible 2HKO" an earlier draft of this sample data claimed.
-    opponentMovesVsYou: [
-      { name: 'Close Combat', minPercent: 100, maxPercent: 100, mostLikelyPercent: 100, koChance: 'guaranteed OHKO', confirmed: false, probability: 0.4 },
-      { name: 'Headlong Rush', minPercent: 80.7, maxPercent: 100, mostLikelyPercent: 88.5, koChance: 'guaranteed 2HKO after Leftovers recovery', confirmed: true },
-      { name: 'Stone Edge', minPercent: 11.5, maxPercent: 20, mostLikelyPercent: 12.4, koChance: undefined, confirmed: false, probability: 0.4 },
-      { name: 'Knock Off', minPercent: 11.1, maxPercent: 19.3, mostLikelyPercent: 12, koChance: 'possible 8HKO', confirmed: false, probability: 0.4 },
-      { name: 'Ice Spinner', minPercent: 8.9, maxPercent: 15.9, mostLikelyPercent: 9.8, koChance: undefined, confirmed: false, probability: 0.4 },
-      { name: 'Rapid Spin', minPercent: 5.6, maxPercent: 10, mostLikelyPercent: 6.1, koChance: undefined, confirmed: true },
-    ],
-    speed: {
-      yourSpeed: 117,
-      opponentSpeedRange: [89, 134],
-      opponentSpeedMostLikely: 89,
-      youAreFasterWorstCase: false,
-      youAreFasterBestCase: true,
-      youAreFasterMostLikely: true,
-      trickRoomActive: false,
-    },
-  },
-  bench: [
-    {
-      yours: { ident: 'p1b: Iron Valiant', species: 'Iron Valiant', hpPercent: 100, status: undefined, fainted: false, isActive: false },
-      opponent: tuskOpponentInfo,
+const demoTurnsRoom1 = [
+  {
+    roomid: 'battle-gen9randombattle-1',
+    turn: 1,
+    generatedAt: Date.now(),
+    format: '[Gen 9] Random Battle',
+    waiting: false,
+    narrationNote: 'Great Tusk just switched in. Nothing revealed yet — 3 candidate roles are still possible, so the read on ability/item/moves is as wide as it gets.',
+    active: {
+      yours: { ident: 'p1a: Kingambit', species: 'Kingambit', hpPercent: 100, status: undefined, fainted: false, isActive: true },
+      opponent: {
+        ident: 'p2a: Great Tusk', species: 'Great Tusk', level: 77, hpPercent: 100, status: undefined, fainted: false, isActive: true,
+        dataFound: true,
+        candidateRoles: ['Bulky Setup', 'Bulky Support', 'Fast Bulky Setup'],
+        ability: { known: undefined, possible: [{ name: 'Protosynthesis', probability: 1 }] },
+        item: { possible: [
+          { name: 'Leftovers', probability: 0.4167 },
+          { name: 'Booster Energy', probability: 0.3333 },
+          { name: 'Assault Vest', probability: 0.0833 },
+          { name: 'Choice Band', probability: 0.0833 },
+          { name: 'Choice Scarf', probability: 0.0833 },
+        ] },
+        teraType: { possible: [{ name: 'Ground', probability: 0.5 }, { name: 'Steel', probability: 0.5 }] },
+        revealedMoves: [],
+        possibleRemainingMoves: [
+          { name: 'Close Combat', probability: 0.7238 },
+          { name: 'Rapid Spin', probability: 0.7238 },
+          { name: 'Stone Edge', probability: 0.7238 },
+          { name: 'Bulk Up', probability: 0.5333 },
+          { name: 'Earthquake', probability: 0.5333 },
+          { name: 'Headlong Rush', probability: 0.1905 },
+          { name: 'Ice Spinner', probability: 0.1905 },
+          { name: 'Knock Off', probability: 0.1905 },
+          { name: 'Stealth Rock', probability: 0.1905 },
+        ],
+      },
       yourMovesVsOpponent: [
-        { name: 'Moonblast', minPercent: 84.5, maxPercent: 100, mostLikelyPercent: 92.3, koChance: '6.3% chance to OHKO', confirmed: true },
-        { name: 'Psychic', minPercent: 53, maxPercent: 95.1, mostLikelyPercent: 58.1, koChance: 'guaranteed 2HKO', confirmed: true },
+        { name: 'Iron Head', minPercent: 20.7, maxPercent: 24.7, mostLikelyPercent: 22.7, koChance: 'guaranteed 5HKO', confirmed: true },
+        { name: 'Kowtow Cleave', minPercent: 10.9, maxPercent: 13.2, mostLikelyPercent: 12, koChance: undefined, confirmed: true },
+        { name: 'Sucker Punch', minPercent: 8.9, maxPercent: 10.9, mostLikelyPercent: 9.9, koChance: undefined, confirmed: true },
+      ],
+      opponentMovesVsYou: [
+        { name: 'Close Combat', minPercent: 100, maxPercent: 100, mostLikelyPercent: 100, koChance: 'guaranteed OHKO', confirmed: false, probability: 0.7238 },
+        { name: 'Headlong Rush', minPercent: 80.7, maxPercent: 100, mostLikelyPercent: 88.5, koChance: 'guaranteed 2HKO after Leftovers recovery', confirmed: false, probability: 0.1905 },
+        { name: 'Earthquake', minPercent: 68.9, maxPercent: 100, mostLikelyPercent: 74.8, koChance: 'guaranteed 2HKO after Leftovers recovery', confirmed: false, probability: 0.5333 },
+        { name: 'Stone Edge', minPercent: 11.5, maxPercent: 20, mostLikelyPercent: 12.4, koChance: undefined, confirmed: false, probability: 0.7238 },
+        { name: 'Knock Off', minPercent: 11.1, maxPercent: 19.3, mostLikelyPercent: 12, koChance: 'possible 8HKO', confirmed: false, probability: 0.1905 },
+        { name: 'Ice Spinner', minPercent: 8.9, maxPercent: 15.9, mostLikelyPercent: 9.8, koChance: undefined, confirmed: false, probability: 0.1905 },
+        { name: 'Rapid Spin', minPercent: 5.6, maxPercent: 10, mostLikelyPercent: 6.1, koChance: undefined, confirmed: false, probability: 0.7238 },
+      ],
+      speed: {
+        yourSpeed: 117,
+        opponentSpeedRange: [179, 268],
+        opponentSpeedMostLikely: 179,
+        youAreFasterWorstCase: false,
+        youAreFasterBestCase: false,
+        youAreFasterMostLikely: false,
+        trickRoomActive: false,
+      },
+    },
+    bench: [],
+    opponentRevealedBench: [],
+  },
+  {
+    roomid: 'battle-gen9randombattle-1',
+    turn: 2,
+    generatedAt: Date.now(),
+    format: '[Gen 9] Random Battle',
+    waiting: false,
+    narrationNote: 'Great Tusk used Rapid Spin. It’s revealed now, but every remaining role’s movepool includes it — so the role read doesn’t narrow at all, just the leftover move-probability math.',
+    active: {
+      yours: { ident: 'p1a: Kingambit', species: 'Kingambit', hpPercent: 92, status: undefined, fainted: false, isActive: true },
+      opponent: {
+        ident: 'p2a: Great Tusk', species: 'Great Tusk', level: 77, hpPercent: 88, status: undefined, fainted: false, isActive: true,
+        dataFound: true,
+        candidateRoles: ['Bulky Setup', 'Bulky Support', 'Fast Bulky Setup'],
+        ability: { known: undefined, possible: [{ name: 'Protosynthesis', probability: 1 }] },
+        item: { possible: [
+          { name: 'Leftovers', probability: 0.4167 },
+          { name: 'Booster Energy', probability: 0.3333 },
+          { name: 'Assault Vest', probability: 0.0833 },
+          { name: 'Choice Band', probability: 0.0833 },
+          { name: 'Choice Scarf', probability: 0.0833 },
+        ] },
+        teraType: { possible: [{ name: 'Ground', probability: 0.5 }, { name: 'Steel', probability: 0.5 }] },
+        revealedMoves: ['Rapid Spin'],
+        possibleRemainingMoves: [
+          { name: 'Close Combat', probability: 0.6667 },
+          { name: 'Stone Edge', probability: 0.6667 },
+          { name: 'Bulk Up', probability: 0.5 },
+          { name: 'Earthquake', probability: 0.5 },
+          { name: 'Headlong Rush', probability: 0.1667 },
+          { name: 'Ice Spinner', probability: 0.1667 },
+          { name: 'Knock Off', probability: 0.1667 },
+          { name: 'Stealth Rock', probability: 0.1667 },
+        ],
+      },
+      yourMovesVsOpponent: [
+        { name: 'Iron Head', minPercent: 20.7, maxPercent: 24.7, mostLikelyPercent: 22.7, koChance: 'guaranteed 5HKO', confirmed: true },
+        { name: 'Kowtow Cleave', minPercent: 10.9, maxPercent: 13.2, mostLikelyPercent: 12, koChance: undefined, confirmed: true },
+        { name: 'Sucker Punch', minPercent: 8.9, maxPercent: 10.9, mostLikelyPercent: 9.9, koChance: undefined, confirmed: true },
+      ],
+      opponentMovesVsYou: [
+        { name: 'Close Combat', minPercent: 100, maxPercent: 100, mostLikelyPercent: 100, koChance: 'guaranteed OHKO', confirmed: false, probability: 0.6667 },
+        { name: 'Headlong Rush', minPercent: 80.7, maxPercent: 100, mostLikelyPercent: 88.5, koChance: 'guaranteed 2HKO after Leftovers recovery', confirmed: false, probability: 0.1667 },
+        { name: 'Earthquake', minPercent: 68.9, maxPercent: 100, mostLikelyPercent: 74.8, koChance: 'guaranteed 2HKO after Leftovers recovery', confirmed: false, probability: 0.5 },
+        { name: 'Stone Edge', minPercent: 11.5, maxPercent: 20, mostLikelyPercent: 12.4, koChance: undefined, confirmed: false, probability: 0.6667 },
+        { name: 'Knock Off', minPercent: 11.1, maxPercent: 19.3, mostLikelyPercent: 12, koChance: 'possible 8HKO', confirmed: false, probability: 0.1667 },
+        { name: 'Ice Spinner', minPercent: 8.9, maxPercent: 15.9, mostLikelyPercent: 9.8, koChance: undefined, confirmed: false, probability: 0.1667 },
+        { name: 'Rapid Spin', minPercent: 5.6, maxPercent: 10, mostLikelyPercent: 6.1, koChance: undefined, confirmed: true },
+      ],
+      speed: {
+        yourSpeed: 117,
+        opponentSpeedRange: [179, 268],
+        opponentSpeedMostLikely: 179,
+        youAreFasterWorstCase: false,
+        youAreFasterBestCase: false,
+        youAreFasterMostLikely: false,
+        trickRoomActive: false,
+      },
+    },
+    bench: [],
+    opponentRevealedBench: [],
+  },
+  {
+    roomid: 'battle-gen9randombattle-1',
+    turn: 3,
+    generatedAt: Date.now(),
+    format: '[Gen 9] Random Battle',
+    waiting: false,
+    narrationNote: 'Great Tusk used Headlong Rush — it only appears in the "Bulky Support" role’s movepool, so the read narrows from 3 candidate roles to exactly 1, and the item guess collapses from a 5-way split to a clean 4-way. It very nearly KO’d Kingambit.',
+    active: {
+      yours: { ident: 'p1a: Kingambit', species: 'Kingambit', hpPercent: 8, status: undefined, fainted: false, isActive: true },
+      opponent: {
+        ident: 'p2a: Great Tusk', species: 'Great Tusk', level: 77, hpPercent: 76, status: undefined, fainted: false, isActive: true,
+        dataFound: true,
+        candidateRoles: ['Bulky Support'],
+        ability: { known: undefined, possible: [{ name: 'Protosynthesis', probability: 1 }] },
+        item: { possible: [
+          { name: 'Assault Vest', probability: 0.25 },
+          { name: 'Choice Band', probability: 0.25 },
+          { name: 'Choice Scarf', probability: 0.25 },
+          { name: 'Leftovers', probability: 0.25 },
+        ] },
+        teraType: { possible: [{ name: 'Ground', probability: 0.5 }, { name: 'Steel', probability: 0.5 }] },
+        revealedMoves: ['Rapid Spin', 'Headlong Rush'],
+        possibleRemainingMoves: [
+          { name: 'Close Combat', probability: 0.4 },
+          { name: 'Ice Spinner', probability: 0.4 },
+          { name: 'Knock Off', probability: 0.4 },
+          { name: 'Stealth Rock', probability: 0.4 },
+          { name: 'Stone Edge', probability: 0.4 },
+        ],
+      },
+      yourMovesVsOpponent: [
+        { name: 'Iron Head', minPercent: 20.7, maxPercent: 24.7, mostLikelyPercent: 22.7, koChance: 'guaranteed 5HKO', confirmed: true },
+        { name: 'Kowtow Cleave', minPercent: 10.9, maxPercent: 13.2, mostLikelyPercent: 12, koChance: 'possible 8HKO', confirmed: true },
+        { name: 'Sucker Punch', minPercent: 8.9, maxPercent: 10.9, mostLikelyPercent: 9.9, koChance: undefined, confirmed: true },
+      ],
+      opponentMovesVsYou: [
+        { name: 'Close Combat', minPercent: 100, maxPercent: 100, mostLikelyPercent: 100, koChance: 'guaranteed OHKO', confirmed: false, probability: 0.4 },
+        { name: 'Headlong Rush', minPercent: 80.7, maxPercent: 100, mostLikelyPercent: 88.5, koChance: 'guaranteed 2HKO after Leftovers recovery', confirmed: true },
+        { name: 'Stone Edge', minPercent: 11.5, maxPercent: 20, mostLikelyPercent: 12.4, koChance: undefined, confirmed: false, probability: 0.4 },
+        { name: 'Knock Off', minPercent: 11.1, maxPercent: 19.3, mostLikelyPercent: 12, koChance: 'possible 8HKO', confirmed: false, probability: 0.4 },
+        { name: 'Ice Spinner', minPercent: 8.9, maxPercent: 15.9, mostLikelyPercent: 9.8, koChance: undefined, confirmed: false, probability: 0.4 },
+        { name: 'Rapid Spin', minPercent: 5.6, maxPercent: 10, mostLikelyPercent: 6.1, koChance: undefined, confirmed: true },
+      ],
+      speed: {
+        yourSpeed: 117,
+        opponentSpeedRange: [179, 268],
+        opponentSpeedMostLikely: 179,
+        youAreFasterWorstCase: false,
+        youAreFasterBestCase: false,
+        youAreFasterMostLikely: false,
+        trickRoomActive: false,
+      },
+    },
+    bench: [],
+    opponentRevealedBench: [],
+  },
+  {
+    roomid: 'battle-gen9randombattle-1',
+    turn: 4,
+    generatedAt: Date.now(),
+    format: '[Gen 9] Random Battle',
+    waiting: false,
+    narrationNote: 'Kingambit was switched out at 8% HP; Iron Valiant is in now. Great Tusk’s Leftovers just revealed itself in the end-of-turn recovery message, fully confirming the set — every damage/speed range on this card has collapsed to a single number because there’s no more item/role uncertainty left to average over.',
+    active: {
+      yours: { ident: 'p1b: Iron Valiant', species: 'Iron Valiant', hpPercent: 100, status: undefined, fainted: false, isActive: true },
+      opponent: {
+        ident: 'p2a: Great Tusk', species: 'Great Tusk', level: 77, hpPercent: 82, status: undefined, fainted: false, isActive: true,
+        dataFound: true,
+        candidateRoles: ['Bulky Support'],
+        ability: { known: undefined, possible: [{ name: 'Protosynthesis', probability: 1 }] },
+        item: { known: 'Leftovers', possible: [{ name: 'Leftovers', probability: 1 }] },
+        teraType: { possible: [{ name: 'Ground', probability: 0.5 }, { name: 'Steel', probability: 0.5 }] },
+        revealedMoves: ['Rapid Spin', 'Headlong Rush'],
+        possibleRemainingMoves: [
+          { name: 'Close Combat', probability: 0.4 },
+          { name: 'Ice Spinner', probability: 0.4 },
+          { name: 'Knock Off', probability: 0.4 },
+          { name: 'Stealth Rock', probability: 0.4 },
+          { name: 'Stone Edge', probability: 0.4 },
+        ],
+      },
+      yourMovesVsOpponent: [
+        { name: 'Moonblast', minPercent: 100, maxPercent: 100, mostLikelyPercent: 100, koChance: 'guaranteed OHKO', confirmed: true },
+        { name: 'Psychic', minPercent: 80.3, maxPercent: 95.1, mostLikelyPercent: 87.7, koChance: 'guaranteed 2HKO', confirmed: true },
         { name: 'Close Combat', minPercent: 43.8, maxPercent: 51.6, mostLikelyPercent: 47.7, koChance: '10.9% chance to 2HKO', confirmed: true },
       ],
       opponentMovesVsYou: [
-        { name: 'Headlong Rush', minPercent: 54.1, maxPercent: 95.1, mostLikelyPercent: 59, koChance: 'guaranteed 2HKO', confirmed: true },
-        { name: 'Close Combat', minPercent: 27, maxPercent: 47.5, mostLikelyPercent: 29.5, koChance: 'guaranteed 4HKO', confirmed: false, probability: 0.4 },
-        { name: 'Ice Spinner', minPercent: 24.2, maxPercent: 42.6, mostLikelyPercent: 26.4, koChance: '98.4% chance to 4HKO', confirmed: false, probability: 0.4 },
-        { name: 'Rapid Spin', minPercent: 15.2, maxPercent: 26.6, mostLikelyPercent: 16.6, koChance: 'possible 6HKO', confirmed: true },
-        { name: 'Stone Edge', minPercent: 14.8, maxPercent: 26.2, mostLikelyPercent: 16.2, koChance: 'possible 6HKO', confirmed: false, probability: 0.4 },
-        { name: 'Knock Off', minPercent: 7, maxPercent: 12.7, mostLikelyPercent: 7.8, koChance: undefined, confirmed: false, probability: 0.4 },
+        { name: 'Headlong Rush', minPercent: 54.1, maxPercent: 63.9, mostLikelyPercent: 59, koChance: 'guaranteed 2HKO', confirmed: true },
+        { name: 'Close Combat', minPercent: 27, maxPercent: 32, mostLikelyPercent: 29.5, koChance: 'guaranteed 4HKO', confirmed: false, probability: 0.4 },
+        { name: 'Ice Spinner', minPercent: 24.2, maxPercent: 28.7, mostLikelyPercent: 26.4, koChance: '98.4% chance to 4HKO', confirmed: false, probability: 0.4 },
+        { name: 'Rapid Spin', minPercent: 15.2, maxPercent: 18, mostLikelyPercent: 16.6, koChance: 'possible 6HKO', confirmed: true },
+        { name: 'Stone Edge', minPercent: 14.8, maxPercent: 17.6, mostLikelyPercent: 16.2, koChance: 'possible 6HKO', confirmed: false, probability: 0.4 },
+        { name: 'Knock Off', minPercent: 7, maxPercent: 8.6, mostLikelyPercent: 7.8, koChance: undefined, confirmed: false, probability: 0.4 },
       ],
       speed: {
         yourSpeed: 226,
-        opponentSpeedRange: [89, 134],
-        opponentSpeedMostLikely: 89,
+        opponentSpeedRange: [179, 179],
+        opponentSpeedMostLikely: 179,
         youAreFasterWorstCase: true,
         youAreFasterBestCase: true,
         youAreFasterMostLikely: true,
         trickRoomActive: false,
       },
     },
-    {
-      yours: { ident: 'p1c: Dragapult', species: 'Dragapult', hpPercent: 88, status: undefined, fainted: false, isActive: false },
-      opponent: tuskOpponentInfo,
-      yourMovesVsOpponent: [
-        { name: 'Draco Meteor', minPercent: 55.6, maxPercent: 97.7, mostLikelyPercent: 60.5, koChance: 'guaranteed 2HKO', confirmed: true },
-        { name: 'Shadow Ball', minPercent: 33.9, maxPercent: 60.5, mostLikelyPercent: 37.2, koChance: 'guaranteed 3HKO', confirmed: true },
-        { name: 'Fire Blast', minPercent: 31.6, maxPercent: 55.3, mostLikelyPercent: 34.4, koChance: '82.7% chance to 3HKO', confirmed: true },
-      ],
-      // Dragapult is Dragon/Ghost, so Great Tusk's Close Combat (Fighting) and
-      // Rapid Spin (Normal) both whiff completely — Ghost typing is immune to
-      // both — and correctly show up as guaranteed 0%.
-      opponentMovesVsYou: [
-        { name: 'Knock Off', minPercent: 62.6, maxPercent: 100, mostLikelyPercent: 68.3, koChance: 'guaranteed 2HKO', confirmed: false, probability: 0.4 },
-        { name: 'Headlong Rush', minPercent: 58.4, maxPercent: 100, mostLikelyPercent: 63.5, koChance: 'guaranteed 2HKO', confirmed: true },
-        { name: 'Ice Spinner', minPercent: 51.9, maxPercent: 91.6, mostLikelyPercent: 56.5, koChance: 'guaranteed 2HKO', confirmed: false, probability: 0.4 },
-        { name: 'Stone Edge', minPercent: 32.4, maxPercent: 56.9, mostLikelyPercent: 35.3, koChance: '97.9% chance to 3HKO', confirmed: false, probability: 0.4 },
-        { name: 'Rapid Spin', minPercent: 0, maxPercent: 0, mostLikelyPercent: 0, koChance: undefined, confirmed: true },
-        { name: 'Close Combat', minPercent: 0, maxPercent: 0, mostLikelyPercent: 0, koChance: undefined, confirmed: false, probability: 0.4 },
-      ],
-      speed: {
-        yourSpeed: 263,
-        opponentSpeedRange: [89, 134],
-        opponentSpeedMostLikely: 89,
-        youAreFasterWorstCase: true,
-        youAreFasterBestCase: true,
-        youAreFasterMostLikely: true,
-        trickRoomActive: false,
+    bench: [
+      {
+        yours: { ident: 'p1a: Kingambit', species: 'Kingambit', hpPercent: 8, status: undefined, fainted: false, isActive: false },
+        opponent: {
+          ident: 'p2a: Great Tusk', species: 'Great Tusk', level: 77, hpPercent: 82, status: undefined, fainted: false, isActive: true,
+          dataFound: true,
+          candidateRoles: ['Bulky Support'],
+          ability: { known: undefined, possible: [{ name: 'Protosynthesis', probability: 1 }] },
+          item: { known: 'Leftovers', possible: [{ name: 'Leftovers', probability: 1 }] },
+          teraType: { possible: [{ name: 'Ground', probability: 0.5 }, { name: 'Steel', probability: 0.5 }] },
+          revealedMoves: ['Rapid Spin', 'Headlong Rush'],
+          possibleRemainingMoves: [
+            { name: 'Close Combat', probability: 0.4 },
+            { name: 'Ice Spinner', probability: 0.4 },
+            { name: 'Knock Off', probability: 0.4 },
+            { name: 'Stealth Rock', probability: 0.4 },
+            { name: 'Stone Edge', probability: 0.4 },
+          ],
+        },
+        yourMovesVsOpponent: [
+          { name: 'Iron Head', minPercent: 20.7, maxPercent: 24.7, mostLikelyPercent: 22.7, koChance: 'guaranteed 5HKO', confirmed: true },
+          { name: 'Kowtow Cleave', minPercent: 10.9, maxPercent: 13.2, mostLikelyPercent: 12, koChance: 'possible 8HKO', confirmed: true },
+          { name: 'Sucker Punch', minPercent: 8.9, maxPercent: 10.9, mostLikelyPercent: 9.9, koChance: undefined, confirmed: true },
+        ],
+        opponentMovesVsYou: [
+          { name: 'Close Combat', minPercent: 100, maxPercent: 100, mostLikelyPercent: 100, koChance: 'guaranteed OHKO', confirmed: false, probability: 0.4 },
+          { name: 'Headlong Rush', minPercent: 80.7, maxPercent: 96.3, mostLikelyPercent: 88.5, koChance: 'guaranteed 2HKO after Leftovers recovery', confirmed: true },
+          { name: 'Stone Edge', minPercent: 11.5, maxPercent: 13.3, mostLikelyPercent: 12.4, koChance: undefined, confirmed: false, probability: 0.4 },
+          { name: 'Knock Off', minPercent: 11.1, maxPercent: 13, mostLikelyPercent: 12, koChance: 'possible 8HKO', confirmed: false, probability: 0.4 },
+          { name: 'Ice Spinner', minPercent: 8.9, maxPercent: 10.7, mostLikelyPercent: 9.8, koChance: undefined, confirmed: false, probability: 0.4 },
+          { name: 'Rapid Spin', minPercent: 5.6, maxPercent: 6.7, mostLikelyPercent: 6.1, koChance: undefined, confirmed: true },
+        ],
+        speed: {
+          yourSpeed: 117,
+          opponentSpeedRange: [179, 179],
+          opponentSpeedMostLikely: 179,
+          youAreFasterWorstCase: false,
+          youAreFasterBestCase: false,
+          youAreFasterMostLikely: false,
+          trickRoomActive: false,
+        },
       },
-    },
-  ],
-  opponentRevealedBench: [
-    {
-      ident: 'p2b: Iron Hands', species: 'Iron Hands', level: 79, hpPercent: 100, status: undefined, fainted: false, isActive: false,
-      dataFound: true,
-      candidateRoles: ['AV Pivot', 'Bulky Attacker'],
-      ability: { known: 'Quark Drive', possible: [] },
-      item: { possible: [
-        { name: 'Assault Vest', probability: 0.5 },
-        { name: 'Leftovers', probability: 0.5 },
-      ] },
-      teraType: { possible: [
-        { name: 'Fighting', probability: 0.4167 },
-        { name: 'Electric', probability: 0.25 },
-        { name: 'Flying', probability: 0.1667 },
-        { name: 'Steel', probability: 0.1667 },
-      ] },
-      revealedMoves: ['Drain Punch', 'Wild Charge'],
-      possibleRemainingMoves: [
-        { name: 'Ice Punch', probability: 0.5 },
-        { name: 'Thunder Punch', probability: 0.5 },
-        { name: 'Swords Dance', probability: 0.3333 },
-        { name: 'Close Combat', probability: 0.1667 },
-        { name: 'Fake Out', probability: 0.1667 },
-        { name: 'Heavy Slam', probability: 0.1667 },
-        { name: 'Volt Switch', probability: 0.1667 },
-      ],
-    },
-  ],
-});
+    ],
+    opponentRevealedBench: [
+      {
+        ident: 'p2b: Iron Hands', species: 'Iron Hands', level: 79, hpPercent: 100, status: undefined, fainted: false, isActive: false,
+        dataFound: true,
+        candidateRoles: ['AV Pivot', 'Bulky Attacker'],
+        ability: { known: 'Quark Drive', possible: [] },
+        item: { possible: [
+          { name: 'Assault Vest', probability: 0.5 },
+          { name: 'Leftovers', probability: 0.5 },
+        ] },
+        teraType: { possible: [
+          { name: 'Fighting', probability: 0.4167 },
+          { name: 'Electric', probability: 0.25 },
+          { name: 'Flying', probability: 0.1667 },
+          { name: 'Steel', probability: 0.1667 },
+        ] },
+        revealedMoves: ['Drain Punch', 'Wild Charge'],
+        possibleRemainingMoves: [
+          { name: 'Ice Punch', probability: 0.5 },
+          { name: 'Thunder Punch', probability: 0.5 },
+          { name: 'Swords Dance', probability: 0.3333 },
+          { name: 'Close Combat', probability: 0.1667 },
+          { name: 'Fake Out', probability: 0.1667 },
+          { name: 'Heavy Slam', probability: 0.1667 },
+          { name: 'Volt Switch', probability: 0.1667 },
+        ],
+      },
+    ],
+  },
+];
 
-demoReports.set('battle-gen9randombattle-2', {
+const demoRoom2Waiting = {
   roomid: 'battle-gen9randombattle-2',
   turn: 1,
   generatedAt: Date.now(),
@@ -174,4 +333,8 @@ demoReports.set('battle-gen9randombattle-2', {
   waitingReason: 'Waiting to confirm which side is yours...',
   bench: [],
   opponentRevealedBench: [],
-});
+};
+
+const demoReports = new Map();
+demoReports.set('battle-gen9randombattle-1', demoTurnsRoom1[0]);
+demoReports.set('battle-gen9randombattle-2', demoRoom2Waiting);
