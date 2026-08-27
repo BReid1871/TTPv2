@@ -144,6 +144,30 @@ function buildOpponentScenarios(p: ClientPokemon, repo: RandbatsRepository): Can
   }));
 }
 
+/** Many candidate scenarios (different ability/item combos) land on the exact
+ * same damage range -- e.g. an item that doesn't touch the relevant offense/
+ * defense stat at all -- so "most likely" has to sum probability across every
+ * scenario that produced a given (min, max) and pick the highest total,
+ * rather than just taking the single highest-probability scenario with ties
+ * broken by array order (which silently depends on how the upstream data
+ * happened to order otherwise-equivalent candidates). */
+function pickMostLikelyOutcome(
+  outcomes: Array<{ probability: number; minPercent: number; maxPercent: number; koChance?: string }>
+): { mostLikely?: number; koChance?: string } {
+  const grouped = new Map<string, { probability: number; minPercent: number; maxPercent: number; koChance?: string }>();
+  for (const o of outcomes) {
+    const key = `${o.minPercent}|${o.maxPercent}`;
+    const existing = grouped.get(key);
+    if (existing) existing.probability += o.probability;
+    else grouped.set(key, { ...o });
+  }
+  let best: { probability: number; minPercent: number; maxPercent: number; koChance?: string } | undefined;
+  for (const g of grouped.values()) {
+    if (!best || g.probability > best.probability) best = g;
+  }
+  return best ? { mostLikely: (best.minPercent + best.maxPercent) / 2, koChance: best.koChance } : {};
+}
+
 /** Damage from a fixed attacker into a set of candidate defender scenarios. */
 function movesVsCandidateDefenders(
   moves: Array<{ name: string; confirmed: boolean; probability?: number }>,
@@ -155,21 +179,16 @@ function movesVsCandidateDefenders(
   for (const move of moves) {
     let min = Infinity;
     let max = -Infinity;
-    let mostLikely: number | undefined;
-    let mostLikelyProb = -1;
-    let koChance: string | undefined;
+    const outcomes: Array<{ probability: number; minPercent: number; maxPercent: number; koChance?: string }> = [];
     for (const scenario of defenderScenarios) {
       const result = computeMoveDamage(attacker, scenario.calcPokemon, move.name, field);
       if (!result) continue;
       min = Math.min(min, result.minPercent);
       max = Math.max(max, result.maxPercent);
-      if (scenario.probability > mostLikelyProb) {
-        mostLikelyProb = scenario.probability;
-        mostLikely = (result.minPercent + result.maxPercent) / 2;
-        koChance = result.koChance;
-      }
+      outcomes.push({ probability: scenario.probability, minPercent: result.minPercent, maxPercent: result.maxPercent, koChance: result.koChance });
     }
     if (min === Infinity) continue; // status move or calc failure
+    const { mostLikely, koChance } = pickMostLikelyOutcome(outcomes);
     reports.push({
       name: move.name,
       minPercent: round1(min),
@@ -194,21 +213,16 @@ function movesFromCandidateAttackers(
   for (const move of moves) {
     let min = Infinity;
     let max = -Infinity;
-    let mostLikely: number | undefined;
-    let mostLikelyProb = -1;
-    let koChance: string | undefined;
+    const outcomes: Array<{ probability: number; minPercent: number; maxPercent: number; koChance?: string }> = [];
     for (const scenario of attackerScenarios) {
       const result = computeMoveDamage(scenario.calcPokemon, defender, move.name, field);
       if (!result) continue;
       min = Math.min(min, result.minPercent);
       max = Math.max(max, result.maxPercent);
-      if (scenario.probability > mostLikelyProb) {
-        mostLikelyProb = scenario.probability;
-        mostLikely = (result.minPercent + result.maxPercent) / 2;
-        koChance = result.koChance;
-      }
+      outcomes.push({ probability: scenario.probability, minPercent: result.minPercent, maxPercent: result.maxPercent, koChance: result.koChance });
     }
     if (min === Infinity) continue;
+    const { mostLikely, koChance } = pickMostLikelyOutcome(outcomes);
     reports.push({
       name: move.name,
       minPercent: round1(min),
@@ -239,18 +253,28 @@ function buildSpeedReport(
 
   let opponentMin = Infinity;
   let opponentMax = -Infinity;
-  let mostLikely = 0;
-  let mostLikelyProb = -1;
   let yourSpeed = 0;
+  // Many candidate scenarios land on the exact same integer speed (most
+  // items/abilities don't affect Speed at all), so "most likely" has to sum
+  // probability across every scenario that produces a given speed and pick
+  // the highest total -- taking the single highest-probability scenario
+  // (with ties broken by array order) would silently depend on how the
+  // upstream data happened to order otherwise-equivalent candidates.
+  const speedProbability = new Map<number, number>();
 
   for (const scenario of opponentScenarios) {
     const cmp = compareSpeed(yourCalcPokemon, yourSide, scenario.calcPokemon, opponentSide, field, trickRoomActive);
     yourSpeed = cmp.yourSpeed;
     opponentMin = Math.min(opponentMin, cmp.opponentSpeed);
     opponentMax = Math.max(opponentMax, cmp.opponentSpeed);
-    if (scenario.probability > mostLikelyProb) {
-      mostLikelyProb = scenario.probability;
-      mostLikely = cmp.opponentSpeed;
+    speedProbability.set(cmp.opponentSpeed, (speedProbability.get(cmp.opponentSpeed) ?? 0) + scenario.probability);
+  }
+  let mostLikely = 0;
+  let mostLikelyProb = -1;
+  for (const [speed, probability] of speedProbability) {
+    if (probability > mostLikelyProb) {
+      mostLikelyProb = probability;
+      mostLikely = speed;
     }
   }
   if (opponentMin === Infinity) {
