@@ -241,7 +241,17 @@ export function computeMoveDamage(attacker: CalcPokemon, defender: CalcPokemon, 
       koChanceMove = new CalcMove(calcGen, moveName, { hits: centralHits, overrides: bpOverride } as any);
     } else {
       const move = new CalcMove(calcGen, moveName, { overrides: bpOverride } as any);
-      if (move.category === 'Status' || move.bp === 0) return undefined;
+      // Only actually-non-damaging (Status) moves should be filtered out here.
+      // move.bp is the *static* base power from the data table -- it reads 0
+      // for a whole class of real damaging Physical/Special moves whose true
+      // power is computed dynamically inside calculate() itself, using the
+      // attacker/defender it's given (fixed-damage moves like Seismic Toss/
+      // Night Shade, OHKO moves, HP%-based Flail/Reversal/Crush Grip, weight-
+      // based Low Kick/Grass Knot/Heavy Slam, speed-based Electro Ball/Gyro
+      // Ball, ...). Filtering on move.bp === 0 silently dropped every one of
+      // these from every move list in the app (confirmed: calculate() itself
+      // returns correct nonzero ranges for all of them).
+      if (move.category === 'Status') return undefined;
       [min, max] = calculate(calcGen, attacker, defender, move, field).range();
       koChanceMove = move;
     }
