@@ -6,6 +6,11 @@ export const config = {
   port: Number(process.env.PORT ?? 3000),
   randbatsFormat: process.env.RANDBATS_FORMAT ?? 'gen9randombattle',
   randbatsRefreshMs: Number(process.env.RANDBATS_REFRESH_MS ?? 60 * 60 * 1000),
+  // ANALYSIS_MODE=1 -> analysis mode (watch-only, never acts, current/legacy
+  // behavior). ANALYSIS_MODE=0 -> automated mode (queues for and plays its
+  // own Random Battles using the same recommendation engine). Defaults to
+  // analysis mode (the safe, non-acting choice) if unset or unrecognized.
+  analysisMode: process.env.ANALYSIS_MODE !== '0',
 };
 
 function requireEnv(name: string): string {

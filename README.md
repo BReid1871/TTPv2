@@ -3,6 +3,18 @@
 Follows along your Gen 9 Random Battle games on Pokemon Showdown and shows a
 live dashboard with:
 
+Runs in one of two modes, set via `ANALYSIS_MODE`:
+
+- **Analysis mode** (`ANALYSIS_MODE=1`, or unset — the default): watch-only.
+  It spectates whatever battle you start or join and shows recommendations
+  on the dashboard, but never sends a battle command itself.
+- **Automated mode** (`ANALYSIS_MODE=0`): queues for its own Random Battle,
+  plays it out move-by-move using the same recommendation engine, then
+  queues for the next one when it ends — leave it running and it'll keep
+  playing on its own. It plays *every* battle its account ends up in, so
+  don't also play manually on that account while this mode is running; use
+  analysis mode for that instead.
+
 - Damage % (min–max) for every one of your moves against the opponent's active Pokemon
 - Damage % (min–max) for every move the opponent's Pokemon could plausibly know against you
 - Who's faster, right now, including best/worst/most-likely cases while the opponent's set is still uncertain
@@ -43,6 +55,7 @@ spectator. It never sends any battle commands itself.
 |---|---|---|
 | `SHOWDOWN_USERNAME` | yes | The Showdown account to log in as (the one you play Random Battle on). |
 | `SHOWDOWN_PASSWORD` | yes | That account's password. |
+| `ANALYSIS_MODE` | no | `1` (or unset) = analysis mode, watch-only, never acts (default). `0` = automated mode, plays its own Random Battles back-to-back. See above. |
 | `PORT` | no | Port for the dashboard web server (default `3000`; Railway sets this for you). |
 | `SHOWDOWN_SERVER` | no | Websocket host to connect to (default `sim3.psim.us`). |
 | `RANDBATS_FORMAT` | no | Which random-battle format's set data to load (default `gen9randombattle`). |

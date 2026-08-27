@@ -1,11 +1,12 @@
 import { Generations, toID } from '@pkmn/data';
 import { Dex } from '@pkmn/dex';
+import type { Side as ClientSide } from '@pkmn/client';
 import type { BattleSession } from '../battle/battleSession.js';
-import { getRequestStats } from '../battle/requestStats.js';
+import { getRequestInfo } from '../battle/requestStats.js';
 import type { RandbatsRepository } from '../randbats/data.js';
 import { buildField } from '../calc/damage.js';
-import { buildYourCalcPokemon, buildOpponentScenarios } from '../analysis/analyzer.js';
-import type { AnalysisReport } from '../analysis/types.js';
+import { buildYourCalcPokemon, buildOpponentScenarios, buildMatchup } from '../analysis/analyzer.js';
+import type { AnalysisReport, PokemonMatchup } from '../analysis/types.js';
 import { availableTurns, proposedOpponentTurns, isFavorable } from './availableTurns.js';
 import { selfBoostsFor, bestAttackDamagePercent } from './boostedDamage.js';
 import type { ActionEvaluation, RecommendedAction } from './types.js';
@@ -86,6 +87,29 @@ function estimateEntryHazardPercent(sideConditions: Record<string, { level?: num
   return percent;
 }
 
+/** Bench matchups (already fully computed by the analyzer) -> one 'switch'
+ * candidate per non-fainted bench Pokemon. Shared between recommendAction
+ * (both actives alive, weighed against staying in) and recommendForcedSwitch
+ * (your active just fainted, a switch is the only legal choice). */
+export function buildSwitchCandidates(bench: PokemonMatchup[], mySideObj: ClientSide, opponentHpPercent: number): ActionEvaluation[] {
+  return bench.map((b) => {
+    const theirWorstCaseVsBench = Math.max(0, ...b.opponentMovesVsYou.map((m) => m.maxPercent));
+    const hazardChip = estimateEntryHazardPercent(mySideObj.sideConditions as any);
+    const hpAfterHazards = Math.max(0, b.yours.hpPercent - hazardChip);
+    const myTurns = availableTurns(hpAfterHazards, theirWorstCaseVsBench);
+    const bestSwitchInAttack = Math.max(0, ...b.yourMovesVsOpponent.filter((m) => m.confirmed).map((m) => m.minPercent));
+    const theirTurns = proposedOpponentTurns(opponentHpPercent, 0, bestSwitchInAttack);
+    return {
+      kind: 'switch' as const,
+      label: `Switch to ${b.yours.species}`,
+      myAvailableTurns: myTurns,
+      opponentProposedAvailableTurns: theirTurns,
+      favorable: isFavorable(myTurns, theirTurns, b.speed.youAreFasterMostLikely),
+      persistentBoost: false,
+    };
+  });
+}
+
 export function pickBestByTurnsThenBoost(list: ActionEvaluation[]): ActionEvaluation {
   return list.reduce((best, c) => {
     if (c.opponentProposedAvailableTurns < best.opponentProposedAvailableTurns) return c;
@@ -156,9 +180,9 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
       const delta = selfBoostsFor(move.name);
       if (!delta) continue;
       if (!boostReconstruction) {
-        const requestStats = getRequestStats(session.battle, mySideObj);
+        const requestInfo = getRequestInfo(session.battle, mySideObj);
         boostReconstruction = {
-          yourCalc: buildYourCalcPokemon(myActive, requestStats.get(myActive)),
+          yourCalc: buildYourCalcPokemon(myActive, requestInfo.get(myActive)),
           opponentScenarios: buildOpponentScenarios(foeActive, repo, session.damageEvidence.getEvidence(foeActive.speciesForme)),
           field: buildField(session.battle, mySideId),
         };
@@ -204,22 +228,7 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
   }
 
   // --- Switch: bench matchups are already fully computed by the analyzer. ---
-  for (const bench of report.bench) {
-    const theirWorstCaseVsBench = Math.max(0, ...bench.opponentMovesVsYou.map((m) => m.maxPercent));
-    const hazardChip = estimateEntryHazardPercent(mySideObj.sideConditions as any);
-    const hpAfterHazards = Math.max(0, bench.yours.hpPercent - hazardChip);
-    const myTurns = availableTurns(hpAfterHazards, theirWorstCaseVsBench);
-    const bestSwitchInAttack = Math.max(0, ...bench.yourMovesVsOpponent.filter((m) => m.confirmed).map((m) => m.minPercent));
-    const theirTurns = proposedOpponentTurns(matchup.opponent.hpPercent, 0, bestSwitchInAttack);
-    candidates.push({
-      kind: 'switch',
-      label: `Switch to ${bench.yours.species}`,
-      myAvailableTurns: myTurns,
-      opponentProposedAvailableTurns: theirTurns,
-      favorable: isFavorable(myTurns, theirTurns, bench.speed.youAreFasterMostLikely),
-      persistentBoost: false,
-    });
-  }
+  candidates.push(...buildSwitchCandidates(report.bench, mySideObj, matchup.opponent.hpPercent));
 
   if (candidates.length === 0) return undefined;
 
@@ -246,4 +255,40 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
 
   const leastBad = candidates.reduce((best, c) => ((c.myAvailableTurns - c.opponentProposedAvailableTurns) > (best.myAvailableTurns - best.opponentProposedAvailableTurns) ? c : best));
   return { action: leastBad, verdict: 'losing', alternatives: candidates.filter((c) => c !== leastBad) };
+}
+
+/**
+ * Picks a switch when your active Pokemon has just fainted. This is a
+ * distinct entry point from recommendAction because analyzeBattle requires
+ * both sides to have a living active Pokemon before it will produce a
+ * report at all (see analyzeBattle's "waiting" gate) -- so there's no
+ * AnalysisReport to hand to recommendAction here. Instead this builds the
+ * same bench-vs-opponent matchups directly and reuses the switch-scoring
+ * logic (buildSwitchCandidates) that recommendAction already relies on.
+ */
+export function recommendForcedSwitch(session: BattleSession, repo: RandbatsRepository): RecommendedAction | undefined {
+  if (!session.mySide || (session.mySide !== 'p1' && session.mySide !== 'p2')) return undefined;
+  const mySideId: 'p1' | 'p2' = session.mySide;
+  const mySideObj = mySideId === 'p1' ? session.battle.p1 : session.battle.p2;
+  const foeSideObj = mySideId === 'p1' ? session.battle.p2 : session.battle.p1;
+  const foeActive = foeSideObj.active[0];
+  if (!foeActive || foeActive.fainted) return undefined;
+
+  const requestInfo = getRequestInfo(session.battle, mySideObj);
+  const bench = mySideObj.team
+    .filter((p) => !p.fainted)
+    .map((p) => buildMatchup(p, foeActive, session, mySideId, repo, requestInfo, false, true));
+  if (bench.length === 0) return undefined;
+
+  const switchCandidates = buildSwitchCandidates(bench, mySideObj, bench[0].opponent.hpPercent);
+  if (switchCandidates.length === 0) return undefined;
+
+  const favorable = switchCandidates.filter((c) => c.favorable);
+  if (favorable.length > 0) {
+    const winner = pickBestByTurnsThenBoost(favorable);
+    return { action: winner, verdict: 'favorable', alternatives: switchCandidates.filter((c) => c !== winner) };
+  }
+
+  const leastBad = switchCandidates.reduce((best, c) => ((c.myAvailableTurns - c.opponentProposedAvailableTurns) > (best.myAvailableTurns - best.opponentProposedAvailableTurns) ? c : best));
+  return { action: leastBad, verdict: 'losing', alternatives: switchCandidates.filter((c) => c !== leastBad) };
 }

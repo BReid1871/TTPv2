@@ -7,6 +7,7 @@ import { RandbatsRepository } from './randbats/data.js';
 import { analyzeBattle } from './analysis/analyzer.js';
 import { recommendAction } from './decision/recommendAction.js';
 import { DashboardServer } from './web/server.js';
+import { AutoPlayer } from './automation/autoPlayer.js';
 
 const ANALYSIS_DEBOUNCE_MS = 150;
 
@@ -20,6 +21,11 @@ async function main() {
   const conn = new ShowdownConnection();
   const watcher = new RoomWatcher(conn);
   const manager = new BattleManager(conn, watcher);
+  // Analysis mode (default/legacy): watch-only, never sends battle commands.
+  // Automated mode (ANALYSIS_MODE=0): queues for and plays its own matches,
+  // one after another, using the same recommendations below.
+  const autoPlayer = config.analysisMode ? undefined : new AutoPlayer(conn, manager, repo);
+  console.log(`[mode] ${config.analysisMode ? 'analysis (watch-only)' : 'automated (plays its own matches)'}`);
 
   const pendingAnalysis = new Map<string, NodeJS.Timeout>();
 
@@ -36,6 +42,11 @@ async function main() {
           console.error(`[decision] failed for ${session.roomid}:`, err);
         }
         dashboard.publishReport(report);
+        try {
+          autoPlayer?.act(session, report);
+        } catch (err) {
+          console.error(`[auto] failed for ${session.roomid}:`, err);
+        }
       } catch (err) {
         console.error(`[analysis] failed for ${session.roomid}:`, err);
       }
@@ -66,7 +77,10 @@ async function main() {
   });
 
   conn.on('open', () => console.log('[showdown] connected'));
-  conn.on('loggedin', () => console.log(`[showdown] logged in as ${config.username}`));
+  conn.on('loggedin', () => {
+    console.log(`[showdown] logged in as ${config.username}`);
+    autoPlayer?.start();
+  });
   conn.on('close', () => console.log('[showdown] connection closed, reconnecting...'));
   conn.on('error', (err: unknown) => console.error('[showdown] error:', err));
 
