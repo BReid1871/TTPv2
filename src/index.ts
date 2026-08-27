@@ -5,6 +5,7 @@ import { BattleManager } from './showdown/battleManager.js';
 import type { BattleSession } from './battle/battleSession.js';
 import { RandbatsRepository } from './randbats/data.js';
 import { analyzeBattle } from './analysis/analyzer.js';
+import { recommendAction } from './decision/recommendAction.js';
 import { DashboardServer } from './web/server.js';
 
 const ANALYSIS_DEBOUNCE_MS = 150;
@@ -28,7 +29,13 @@ async function main() {
     const timer = setTimeout(() => {
       pendingAnalysis.delete(session.roomid);
       try {
-        dashboard.publishReport(analyzeBattle(session, repo));
+        const report = analyzeBattle(session, repo);
+        try {
+          report.recommendedAction = recommendAction(report, session, repo);
+        } catch (err) {
+          console.error(`[decision] failed for ${session.roomid}:`, err);
+        }
+        dashboard.publishReport(report);
       } catch (err) {
         console.error(`[analysis] failed for ${session.roomid}:`, err);
       }

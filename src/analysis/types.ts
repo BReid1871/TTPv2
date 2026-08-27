@@ -78,4 +78,7 @@ export interface AnalysisReport {
   active?: PokemonMatchup;
   bench: PokemonMatchup[];
   opponentRevealedBench: OpponentSetInfo[];
+  /** computed separately (see src/decision/recommendAction.ts) and attached
+   * by the caller -- compute-only, nothing sends this to the server */
+  recommendedAction?: import('../decision/types.js').RecommendedAction;
 }

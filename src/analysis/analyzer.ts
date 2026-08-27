@@ -107,7 +107,7 @@ function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: bo
 
 /** Build the exact calc.Pokemon for one of *your* team members, using the
  * server-authoritative |request| stats rather than any estimate. */
-function buildYourCalcPokemon(p: ClientPokemon, stats?: { atk: number; def: number; spa: number; spd: number; spe: number }): CalcPokemon {
+export function buildYourCalcPokemon(p: ClientPokemon, stats?: { atk: number; def: number; spa: number; spd: number; spe: number }): CalcPokemon {
   const rawStats = stats
     ? { hp: p.maxhp || 1, ...stats }
     : { hp: p.maxhp || 1, atk: 1, def: 1, spa: 1, spd: 1, spe: 1 };
@@ -146,13 +146,13 @@ function buildOpponentCandidateCalcPokemon(p: ClientPokemon, candidate: SetCandi
   });
 }
 
-interface CandidateScenario {
+export interface CandidateScenario {
   label: string;
   probability: number;
   calcPokemon: CalcPokemon;
 }
 
-function buildOpponentScenarios(p: ClientPokemon, repo: RandbatsRepository, evidence: DamageEvidence[]): CandidateScenario[] {
+export function buildOpponentScenarios(p: ClientPokemon, repo: RandbatsRepository, evidence: DamageEvidence[]): CandidateScenario[] {
   const reveal = toRevealState(p);
   const candidates = filterCandidatesByEvidence(buildSetCandidates(reveal, repo, MAX_CANDIDATE_SCENARIOS), evidence);
   if (candidates.length === 0) {

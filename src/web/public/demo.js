@@ -192,6 +192,29 @@ function renderMatchup(matchup, title) {
   `;
 }
 
+function fmtTurns(n) {
+  return n === Infinity ? '∞' : String(n);
+}
+
+function renderRecommendedAction(rec) {
+  if (!rec) return '';
+  const a = rec.action;
+  const losing = rec.verdict === 'losing';
+  const alternatives = rec.alternatives
+    .slice()
+    .sort((x, y) => Number(y.favorable) - Number(x.favorable) || x.opponentProposedAvailableTurns - y.opponentProposedAvailableTurns)
+    .map((alt) => `<li>${esc(alt.label)} <span class="pct">(${alt.kind}, ${alt.favorable ? 'favorable' : 'unfavorable'} &middot; mine ${fmtTurns(alt.myAvailableTurns)} vs. theirs ${fmtTurns(alt.opponentProposedAvailableTurns)})</span></li>`)
+    .join('');
+  return `
+    <div class="section-title">Recommended action${losing ? ' <span class="status-chip">no favorable option</span>' : ''}</div>
+    <div class="speed-row">
+      <span class="speed-val">${esc(a.label)}</span>
+      <span class="${losing ? 'slower' : 'faster'}">Mine: ${fmtTurns(a.myAvailableTurns)} turns &middot; Theirs: ${fmtTurns(a.opponentProposedAvailableTurns)} turns</span>
+    </div>
+    ${rec.alternatives.length ? `<details class="bench-item" open><summary>Other options considered (${rec.alternatives.length})</summary><ul>${alternatives}</ul></details>` : ''}
+  `;
+}
+
 function renderReport(report) {
   if (report.waiting) {
     appEl.innerHTML = `<p id="empty-state">${esc(report.waitingReason || 'Waiting for battle data...')}</p>`;
@@ -204,6 +227,7 @@ function renderReport(report) {
   }
   html += `<div class="card">
     <h2 class="card-title">Turn ${report.turn} &middot; ${esc(report.format)}</h2>
+    ${renderRecommendedAction(report.recommendedAction)}
     ${renderMatchup(report.active, 'Active')}
   </div>`;
 
