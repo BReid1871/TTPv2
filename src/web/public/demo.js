@@ -44,7 +44,7 @@ function renderTurnControl() {
     return;
   }
   const prevBtn = document.createElement('button');
-  prevBtn.textContent = '◀ Prev turn';
+  prevBtn.textContent = '\u25C0 Prev turn';
   prevBtn.disabled = state.turnIndex === 0;
   prevBtn.onclick = () => {
     state.turnIndex = Math.max(0, state.turnIndex - 1);
@@ -53,7 +53,7 @@ function renderTurnControl() {
   };
 
   const nextBtn = document.createElement('button');
-  nextBtn.textContent = 'Next turn ▶';
+  nextBtn.textContent = 'Next turn \u25B6';
   nextBtn.disabled = state.turnIndex === turns.length - 1;
   nextBtn.onclick = () => {
     state.turnIndex = Math.min(turns.length - 1, state.turnIndex + 1);
