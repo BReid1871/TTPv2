@@ -1,10 +1,10 @@
 import type { Pokemon as ClientPokemon, Side as ClientSide } from '@pkmn/client';
 import type { Pokemon as CalcPokemon } from '@smogon/calc';
-import type { ID } from '@pkmn/data';
+import { toID, type ID } from '@pkmn/data';
 import type { BattleSession } from '../battle/battleSession.js';
 import type { RandbatsRepository } from '../randbats/data.js';
 import { narrowSet, buildSetCandidates, type PokemonRevealState, type SetCandidate } from '../randbats/setTracker.js';
-import { buildKnownPokemon, buildCandidatePokemon, buildField, computeMoveDamage } from '../calc/damage.js';
+import { buildKnownPokemon, buildCandidatePokemon, buildField, computeMoveDamage, calcGen } from '../calc/damage.js';
 import { compareSpeed } from '../calc/speed.js';
 import type { AnalysisReport, MoveDamageReport, OpponentSetInfo, PokemonMatchup, SpeedReport, YourPokemonInfo } from './types.js';
 
@@ -45,6 +45,18 @@ function toYourInfo(p: ClientPokemon, isActive: boolean): YourPokemonInfo {
   };
 }
 
+/** narrowSet operates on @pkmn/client's internal IDs (e.g. 'headlongrush'); map
+ * back to display names (e.g. 'Headlong Rush') for anything shown to the user. */
+function displayMoveName(id: string): string {
+  return calcGen.moves.get(toID(id))?.name ?? id;
+}
+function displayAbilityName(id: string): string {
+  return calcGen.abilities.get(toID(id))?.name ?? id;
+}
+function displayItemName(id: string): string {
+  return calcGen.items.get(toID(id))?.name ?? id;
+}
+
 function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: boolean): OpponentSetInfo {
   const reveal = toRevealState(p);
   const narrowed = narrowSet(reveal, repo);
@@ -58,10 +70,10 @@ function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: bo
     isActive,
     dataFound: narrowed.found,
     candidateRoles: narrowed.candidateRoleNames,
-    ability: narrowed.ability,
-    item: narrowed.item,
+    ability: { ...narrowed.ability, known: narrowed.ability.known ? displayAbilityName(narrowed.ability.known) : undefined },
+    item: { ...narrowed.item, known: narrowed.item.known ? displayItemName(narrowed.item.known) : undefined },
     teraType: narrowed.teraType,
-    revealedMoves: narrowed.revealedMoves,
+    revealedMoves: narrowed.revealedMoves.map(displayMoveName),
     possibleRemainingMoves: narrowed.possibleRemainingMoves.filter((m) => m.probability >= MIN_MOVE_PROBABILITY_TO_SHOW),
   };
 }

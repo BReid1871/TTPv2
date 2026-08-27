@@ -50,7 +50,8 @@ export interface PokemonRevealState {
 }
 
 function hasId(list: string[], id: string): boolean {
-  return list.some((entry) => toID(entry) === id);
+  const wantId = toID(id);
+  return list.some((entry) => toID(entry) === wantId);
 }
 
 function accumulate(dist: Map<string, number>, options: string[], totalWeight: number): void {
