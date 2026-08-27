@@ -52,7 +52,7 @@ demoReports.set('battle-gen9randombattle-1', {
     speed: {
       yourSpeed: 178,
       opponentSpeedRange: [67, 91],
-      opponentSpeedMostLikely: 78,
+      opponentSpeedMostLikely: 91,
       youAreFasterWorstCase: true,
       youAreFasterBestCase: true,
       youAreFasterMostLikely: true,
@@ -93,7 +93,7 @@ demoReports.set('battle-gen9randombattle-1', {
       speed: {
         yourSpeed: 195,
         opponentSpeedRange: [67, 91],
-        opponentSpeedMostLikely: 78,
+        opponentSpeedMostLikely: 91,
         youAreFasterWorstCase: true,
         youAreFasterBestCase: true,
         youAreFasterMostLikely: true,
@@ -125,7 +125,7 @@ demoReports.set('battle-gen9randombattle-1', {
       speed: {
         yourSpeed: 213,
         opponentSpeedRange: [67, 91],
-        opponentSpeedMostLikely: 78,
+        opponentSpeedMostLikely: 91,
         youAreFasterWorstCase: true,
         youAreFasterBestCase: true,
         youAreFasterMostLikely: true,
