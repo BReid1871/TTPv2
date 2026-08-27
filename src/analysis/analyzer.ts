@@ -142,6 +142,7 @@ function buildOpponentCandidateCalcPokemon(p: ClientPokemon, candidate: SetCandi
     evs: candidate.evs,
     ivs: candidate.ivs,
     boosts: pickBoosts(p),
+    currentHpFraction: hpFraction(p),
   });
 }
 
@@ -158,11 +159,15 @@ function buildOpponentScenarios(p: ClientPokemon, repo: RandbatsRepository, evid
     // Unknown to randbats data (e.g. not a Random Battle format, or a
     // species missing from the set): fall back to a "bare" Pokemon using
     // only what's actually been revealed, at a plausible flat level 100.
+    // p.ability/p.item are @pkmn/client's lowercase ID form ('lifeorb'), not
+    // the display-name form ('Life Orb') @smogon/calc's hasAbility()/
+    // hasItem() require -- same trap fixed for buildKnownPokemon and
+    // buildSetCandidates elsewhere in this codebase.
     const fallback = buildOpponentCandidateCalcPokemon(p, {
       roleName: 'unknown',
       probability: 1,
-      ability: p.ability,
-      item: p.item || p.lastItem,
+      ability: p.ability ? displayAbilityName(p.ability) : p.ability,
+      item: p.item || p.lastItem ? displayItemName(p.item || p.lastItem) : '',
       evs: { hp: 84, atk: 84, def: 84, spa: 84, spd: 84, spe: 84 },
       ivs: { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 },
       level: p.level || 100,

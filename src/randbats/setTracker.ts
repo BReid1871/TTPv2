@@ -194,8 +194,21 @@ export function buildSetCandidates(
   const candidates: SetCandidate[] = [];
 
   for (const [roleName, role] of roleEntries) {
-    const abilities = knownAbility && hasId(role.abilities, knownAbility) ? [knownAbility] : role.abilities;
-    const items = knownItem && hasId(role.items, knownItem) ? [knownItem] : role.items;
+    // knownAbility/knownItem come straight from @pkmn/client's live battle
+    // state, which is always lowercase ID form ('protosynthesis'), not the
+    // display-name form ('Protosynthesis') @smogon/calc's hasAbility()/
+    // hasItem() require. Once a candidate matches (hasId already normalizes
+    // both sides via toID), pick the *role's own* display-name spelling
+    // rather than the raw known value -- otherwise every confirmed/revealed
+    // opponent ability or item would silently stop affecting the damage
+    // calc the moment it's actually known, which is exactly the case where
+    // this should be most accurate.
+    const abilities = knownAbility && hasId(role.abilities, knownAbility)
+      ? [role.abilities.find((a) => toID(a) === toID(knownAbility))!]
+      : role.abilities;
+    const items = knownItem && hasId(role.items, knownItem)
+      ? [role.items.find((i) => toID(i) === toID(knownItem))!]
+      : role.items;
     for (const ability of abilities) {
       for (const item of items) {
         candidates.push({

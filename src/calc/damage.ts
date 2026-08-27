@@ -30,6 +30,8 @@ export interface CandidateSetInput {
   evs: StatsTable;
   ivs: StatsTable;
   boosts: Partial<Record<'atk' | 'def' | 'spa' | 'spd' | 'spe', number>>;
+  /** 0..1, defaults to 1 (full HP) if omitted */
+  currentHpFraction?: number;
 }
 
 const STATUS_MAP: Record<string, 'slp' | 'psn' | 'brn' | 'frz' | 'par' | 'tox'> = {
@@ -88,6 +90,15 @@ export function buildCandidatePokemon(name: string, set: CandidateSetInput): Cal
     boostedStat: set.ability && isParadoxAbility(set.ability) ? 'auto' : undefined,
   });
   p.boosts = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0, ...set.boosts } as any;
+  // Without this, every candidate defaults to full HP regardless of the
+  // real observed HP -- which silently breaks a lot more than it looks
+  // like: Multiscale/Shadow Shield only apply at exactly 100% HP, Brine
+  // doubles power below 50%, Defeatist halves Attack/SpA below 50%, and
+  // Eruption/Water Spout/Flail/Reversal/Endeavor/Final Gambit all scale
+  // directly off current HP -- all of it silently wrong for a damaged
+  // opponent (or a damaged "your" candidate on the bench) without this.
+  const fraction = set.currentHpFraction ?? 1;
+  if (fraction < 1) p.originalCurHP = Math.max(1, Math.round(p.maxHP() * fraction));
   return p;
 }
 
