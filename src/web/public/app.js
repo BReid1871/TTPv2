@@ -83,10 +83,22 @@ function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function renderMonHeader(name, hpPercent, status, sub) {
+// Two-turn moves that hide the user (semi-invulnerable) vs. ones that just
+// take 2 turns out in the open (Solar Beam, Skull Bash, ...) -- mirrors
+// src/analysis/chargeMoves.ts's SEMI_INVULNERABLE set, kept small and
+// hand-copied here since the client only needs the label, not the full
+// per-move bypass logic that lives server-side.
+const SEMI_INVULNERABLE_MOVES = new Set(['fly', 'bounce', 'dig', 'dive', 'phantom force', 'shadow force']);
+
+function chargeChipLabel(chargingMove) {
+  const hidden = SEMI_INVULNERABLE_MOVES.has(chargingMove.toLowerCase());
+  return hidden ? `Semi-invulnerable (${chargingMove})` : `Charging (${chargingMove})`;
+}
+
+function renderMonHeader(name, hpPercent, status, sub, chargingMove) {
   return `
     <div class="mon-header">
-      <span class="mon-name">${esc(name)}${status ? `<span class="status-chip">${esc(status)}</span>` : ''}</span>
+      <span class="mon-name">${esc(name)}${status ? `<span class="status-chip">${esc(status)}</span>` : ''}${chargingMove ? `<span class="charge-chip">${esc(chargeChipLabel(chargingMove))}</span>` : ''}</span>
       <span class="mon-sub">${hpPercent}% HP${sub ? ` &middot; ${esc(sub)}` : ''}</span>
     </div>
     <div class="hp-bar-track"><div class="hp-bar-fill ${hpClass(hpPercent)}" style="width:${hpPercent}%"></div></div>
@@ -112,8 +124,9 @@ function renderMoveTable(moves, emptyLabel) {
       const barClass = pct >= 50 ? 'high' : '';
       const range = m.minPercent === m.maxPercent ? `${m.minPercent}%` : `${m.minPercent}&ndash;${m.maxPercent}%`;
       const label = m.confirmed ? '' : ` <span class="pct">(${Math.round((m.probability ?? 0) * 100)}% likely)</span>`;
+      const notice = m.chargeNotice ? `<span class="charge-notice">${esc(m.chargeNotice)}</span>` : '';
       return `<tr class="${m.confirmed ? '' : 'unconfirmed'}">
-        <td>${esc(m.name)}${label}</td>
+        <td>${esc(m.name)}${label}${notice}</td>
         <td><span class="dmg-bar-track"><span class="dmg-bar-fill ${barClass}" style="width:${Math.min(100, pct)}%"></span></span>${range}</td>
         <td>${m.koChance ? esc(m.koChance) : ''}</td>
       </tr>`;
@@ -138,7 +151,7 @@ function renderSpeed(speed) {
 
 function renderOpponentPanel(opp) {
   return `
-    ${renderMonHeader(opp.species, opp.hpPercent, opp.status, `Lv.${opp.level}`)}
+    ${renderMonHeader(opp.species, opp.hpPercent, opp.status, `Lv.${opp.level}`, opp.chargingMove)}
     ${!opp.dataFound ? '<p class="role-list">No Random Battle set data found for this species.</p>' : ''}
     <div class="section-title">Candidate roles (${opp.candidateRoles.length})</div>
     <div class="role-list">${opp.candidateRoles.map(esc).join(', ') || '&mdash;'}</div>
@@ -160,7 +173,7 @@ function renderMatchup(matchup, title) {
     <div class="matchup-grid">
       <div>
         <div class="section-title">${esc(title)} (yours)</div>
-        ${renderMonHeader(matchup.yours.species, matchup.yours.hpPercent, matchup.yours.status)}
+        ${renderMonHeader(matchup.yours.species, matchup.yours.hpPercent, matchup.yours.status, undefined, matchup.yours.chargingMove)}
         <div class="section-title">Your moves vs. opponent</div>
         ${renderMoveTable(matchup.yourMovesVsOpponent, 'No damaging moves known.')}
       </div>
@@ -175,6 +188,29 @@ function renderMatchup(matchup, title) {
   `;
 }
 
+function fmtTurns(n) {
+  return n === Infinity ? '∞' : String(n);
+}
+
+function renderRecommendedAction(rec) {
+  if (!rec) return '';
+  const a = rec.action;
+  const losing = rec.verdict === 'losing';
+  const alternatives = rec.alternatives
+    .slice()
+    .sort((x, y) => Number(y.favorable) - Number(x.favorable) || x.opponentProposedAvailableTurns - y.opponentProposedAvailableTurns)
+    .map((alt) => `<li>${esc(alt.label)} <span class="pct">(${alt.kind}, ${alt.favorable ? 'favorable' : 'unfavorable'} &middot; mine ${fmtTurns(alt.myAvailableTurns)} vs. theirs ${fmtTurns(alt.opponentProposedAvailableTurns)})</span></li>`)
+    .join('');
+  return `
+    <div class="section-title">Recommended action${losing ? ' <span class="status-chip">no favorable option</span>' : ''}</div>
+    <div class="speed-row">
+      <span class="speed-val">${esc(a.label)}</span>
+      <span class="${losing ? 'slower' : 'faster'}">Mine: ${fmtTurns(a.myAvailableTurns)} turns &middot; Theirs: ${fmtTurns(a.opponentProposedAvailableTurns)} turns</span>
+    </div>
+    ${rec.alternatives.length ? `<details class="bench-item"><summary>Other options considered (${rec.alternatives.length})</summary><ul>${alternatives}</ul></details>` : ''}
+  `;
+}
+
 function renderReport(report) {
   if (report.waiting) {
     appEl.innerHTML = `<p id="empty-state">${esc(report.waitingReason || 'Waiting for battle data...')}</p>`;
@@ -183,13 +219,14 @@ function renderReport(report) {
 
   let html = `<div class="card">
     <h2 class="card-title">Turn ${report.turn} &middot; ${esc(report.format)}</h2>
+    ${renderRecommendedAction(report.recommendedAction)}
     ${renderMatchup(report.active, 'Active')}
   </div>`;
 
   if (report.bench.length) {
     html += `<div class="card"><h2 class="card-title">Your bench vs. current opponent</h2>`;
     for (const b of report.bench) {
-      html += `<details class="bench-item"><summary><span class="mon-name">${esc(b.yours.species)}</span><span class="mon-sub">${b.yours.hpPercent}% HP &middot; ${b.speed.youAreFasterMostLikely ? 'likely faster' : 'likely slower'}</span></summary>${renderMatchup(b, 'Bench')}</details>`;
+      html += `<details class="bench-item"><summary><span class="mon-name">${esc(b.yours.species)}${b.yours.chargingMove ? `<span class="charge-chip">${esc(chargeChipLabel(b.yours.chargingMove))}</span>` : ''}</span><span class="mon-sub">${b.yours.hpPercent}% HP &middot; ${b.speed.youAreFasterMostLikely ? 'likely faster' : 'likely slower'}</span></summary>${renderMatchup(b, 'Bench')}</details>`;
     }
     html += `</div>`;
   }
@@ -197,7 +234,7 @@ function renderReport(report) {
   if (report.opponentRevealedBench.length) {
     html += `<div class="card"><h2 class="card-title">Previously seen opponent Pokemon</h2>`;
     for (const o of report.opponentRevealedBench) {
-      html += `<details class="bench-item"><summary><span class="mon-name">${esc(o.species)}</span><span class="mon-sub">${o.hpPercent}% HP</span></summary><div class="matchup-grid"><div>${renderOpponentPanel(o)}</div></div></details>`;
+      html += `<details class="bench-item"><summary><span class="mon-name">${esc(o.species)}${o.chargingMove ? `<span class="charge-chip">${esc(chargeChipLabel(o.chargingMove))}</span>` : ''}</span><span class="mon-sub">${o.hpPercent}% HP</span></summary><div class="matchup-grid"><div>${renderOpponentPanel(o)}</div></div></details>`;
     }
     html += `</div>`;
   }

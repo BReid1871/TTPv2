@@ -1,5 +1,6 @@
 import { Generations, Pokemon as CalcPokemon, Move as CalcMove, Field as CalcField, Side as CalcSide, calculate } from '@smogon/calc';
 import type { Battle, Side as ClientSide } from '@pkmn/client';
+import { toID } from '@pkmn/data';
 import { DEFAULT_EVS, DEFAULT_IVS, type StatsTable } from '../randbats/setTracker.js';
 
 export const calcGen = Generations.get(9);
@@ -29,6 +30,8 @@ export interface CandidateSetInput {
   evs: StatsTable;
   ivs: StatsTable;
   boosts: Partial<Record<'atk' | 'def' | 'spa' | 'spd' | 'spe', number>>;
+  /** 0..1, defaults to 1 (full HP) if omitted */
+  currentHpFraction?: number;
 }
 
 const STATUS_MAP: Record<string, 'slp' | 'psn' | 'brn' | 'frz' | 'par' | 'tox'> = {
@@ -87,6 +90,15 @@ export function buildCandidatePokemon(name: string, set: CandidateSetInput): Cal
     boostedStat: set.ability && isParadoxAbility(set.ability) ? 'auto' : undefined,
   });
   p.boosts = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0, ...set.boosts } as any;
+  // Without this, every candidate defaults to full HP regardless of the
+  // real observed HP -- which silently breaks a lot more than it looks
+  // like: Multiscale/Shadow Shield only apply at exactly 100% HP, Brine
+  // doubles power below 50%, Defeatist halves Attack/SpA below 50%, and
+  // Eruption/Water Spout/Flail/Reversal/Endeavor/Final Gambit all scale
+  // directly off current HP -- all of it silently wrong for a damaged
+  // opponent (or a damaged "your" candidate on the bench) without this.
+  const fraction = set.currentHpFraction ?? 1;
+  if (fraction < 1) p.originalCurHP = Math.max(1, Math.round(p.maxHP() * fraction));
   return p;
 }
 
@@ -191,23 +203,83 @@ export interface MoveDamageResult {
   koChance?: string;
 }
 
-/** Computes min/max damage as a percentage of the defender's max HP. */
-export function computeMoveDamage(attacker: CalcPokemon, defender: CalcPokemon, moveName: string, field: CalcField): MoveDamageResult | undefined {
+/** For a variable-hit move (multihit: [min, max], e.g. Bullet Seed's 2-5),
+ * @smogon/calc's Move only ever defaults to a single fixed hit count
+ * unless told otherwise (3, the statistical mean, UNLESS an 'ability'
+ * option of 'Skill Link' is passed to the Move constructor directly --
+ * which this app never did, so Skill Link was never actually modeled
+ * either, before or after the fix this replaces). Neither hit-count-
+ * modifying ability/item is auto-detected by @smogon/calc from the
+ * attacker Pokemon, so both are handled here:
+ *  - Skill Link: always hits the maximum number of times (no low end).
+ *  - Loaded Dice (not modeled by @smogon/calc at all): guarantees at
+ *    least 4 hits for a 2-5 move (raises the floor, doesn't touch the
+ *    ceiling).
+ * Returns [minHits, maxHits, centralHits] -- central is what koChance
+ * is computed against: the single most representative hit count (still
+ * 3 normally, but 5 for Skill Link, 4 for Loaded Dice's ~87.5%-likely
+ * floor case) -- or undefined for a fixed-hit-count move (Double Kick,
+ * Triple Kick, ...) or one with no multi-hit at all. */
+function variableHitCounts(moveName: string, attacker: CalcPokemon): [number, number, number] | undefined {
+  const multihit = calcGen.moves.get(toID(moveName))?.multihit;
+  if (!Array.isArray(multihit)) return undefined;
+  const [rawMin, rawMax] = multihit;
+  if (attacker.hasAbility('Skill Link')) return [rawMax, rawMax, rawMax];
+  if (attacker.hasItem('Loaded Dice')) return [Math.max(rawMin, 4), rawMax, 4];
+  return [rawMin, rawMax, rawMin + 1];
+}
+
+/** Computes min/max damage as a percentage of the defender's max HP.
+ * `basePowerMultiplier` (default 1) scales the move's base power before any
+ * other calc happens -- used for e.g. Earthquake/Magnitude's real 2x bonus
+ * against a Dig-ing target, so both the resulting range AND koChance stay
+ * consistent (rather than doubling the output percentages after the fact,
+ * which would leave koChance describing the wrong, unmultiplied hit). */
+export function computeMoveDamage(attacker: CalcPokemon, defender: CalcPokemon, moveName: string, field: CalcField, basePowerMultiplier = 1): MoveDamageResult | undefined {
   try {
-    const move = new CalcMove(calcGen, moveName);
-    if (move.category === 'Status' || move.bp === 0) return undefined;
-    const result = calculate(calcGen, attacker, defender, move, field);
-    const [min, max] = result.range();
     const maxHp = defender.maxHP();
+    const baseBp = calcGen.moves.get(toID(moveName))?.basePower ?? 0;
+    const bpOverride = basePowerMultiplier !== 1 ? { basePower: Math.round(baseBp * basePowerMultiplier) } : undefined;
+
+    const hitCounts = variableHitCounts(moveName, attacker);
+    let min: number;
+    let max: number;
+    let koChanceMove: CalcMove;
+    if (hitCounts) {
+      const [minHits, maxHits, centralHits] = hitCounts;
+      min = calculate(calcGen, attacker, defender, new CalcMove(calcGen, moveName, { hits: minHits, overrides: bpOverride } as any), field).range()[0];
+      max = calculate(calcGen, attacker, defender, new CalcMove(calcGen, moveName, { hits: maxHits, overrides: bpOverride } as any), field).range()[1];
+      koChanceMove = new CalcMove(calcGen, moveName, { hits: centralHits, overrides: bpOverride } as any);
+    } else {
+      const move = new CalcMove(calcGen, moveName, { overrides: bpOverride } as any);
+      // Only actually-non-damaging (Status) moves should be filtered out here.
+      // move.bp is the *static* base power from the data table -- it reads 0
+      // for a whole class of real damaging Physical/Special moves whose true
+      // power is computed dynamically inside calculate() itself, using the
+      // attacker/defender it's given (fixed-damage moves like Seismic Toss/
+      // Night Shade, OHKO moves, HP%-based Flail/Reversal/Crush Grip, weight-
+      // based Low Kick/Grass Knot/Heavy Slam, speed-based Electro Ball/Gyro
+      // Ball, ...). Filtering on move.bp === 0 silently dropped every one of
+      // these from every move list in the app (confirmed: calculate() itself
+      // returns correct nonzero ranges for all of them).
+      if (move.category === 'Status') return undefined;
+      [min, max] = calculate(calcGen, attacker, defender, move, field).range();
+      koChanceMove = move;
+    }
     const minPercent = Math.min(100, (min / maxHp) * 100);
     const maxPercent = Math.min(100, (max / maxHp) * 100);
     // result.kochance() (and .desc(), which we don't use) throws for a
     // guaranteed-0-damage hit (e.g. a full type immunity) instead of
     // reporting "won't KO" -- that's a real outcome, not a calc error, so
     // it must not fall through to the outer catch and drop the whole move.
+    // For a variable-hit move, this reflects the single most representative
+    // hit count (see variableHitCounts) rather than the widened range
+    // above -- matches how koChance is described everywhere else in the
+    // app (the single most representative case), rather than mixing a
+    // worst-case KO claim with a best-case-anchored minPercent.
     let koChance: string | undefined;
     try {
-      koChance = result.kochance().text;
+      koChance = calculate(calcGen, attacker, defender, koChanceMove, field).kochance().text;
     } catch {
       koChance = undefined;
     }

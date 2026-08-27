@@ -5,6 +5,7 @@ import { Dex } from '@pkmn/dex';
 import type { SideID } from '@pkmn/data';
 import { config } from '../config.js';
 import { DamageEvidenceTracker } from './damageEvidence.js';
+import { ChargeStateTracker } from './chargeState.js';
 
 export const gens = new Generations(Dex);
 
@@ -20,6 +21,7 @@ export class BattleSession extends EventEmitter {
   readonly battle: Battle;
   readonly roomid: string;
   readonly damageEvidence = new DamageEvidenceTracker();
+  readonly chargeState = new ChargeStateTracker();
   mySide?: SideID;
   ended = false;
 
@@ -50,6 +52,7 @@ export class BattleSession extends EventEmitter {
     }
 
     this.damageEvidence.observeLine(line, this.battle, this.mySide);
+    this.chargeState.observeLine(line);
     this.emit('update', line);
   }
 

@@ -1,0 +1,249 @@
+import { Generations, toID } from '@pkmn/data';
+import { Dex } from '@pkmn/dex';
+import type { BattleSession } from '../battle/battleSession.js';
+import { getRequestStats } from '../battle/requestStats.js';
+import type { RandbatsRepository } from '../randbats/data.js';
+import { buildField } from '../calc/damage.js';
+import { buildYourCalcPokemon, buildOpponentScenarios } from '../analysis/analyzer.js';
+import type { AnalysisReport } from '../analysis/types.js';
+import { availableTurns, proposedOpponentTurns, isFavorable } from './availableTurns.js';
+import { selfBoostsFor, bestAttackDamagePercent } from './boostedDamage.js';
+import type { ActionEvaluation, RecommendedAction } from './types.js';
+
+// Same source as boostedDamage.ts/chargeMoves.ts's dataGen -- @smogon/calc's
+// own move data strips category/heal/boosts fields not needed for the
+// damage formula itself.
+const dataGen = new Generations(Dex).get(9);
+
+const SLACK_THRESHOLD = 2;
+const REST_ID = 'rest';
+
+type MoveCategory = 'attack' | 'boost' | 'heal' | 'utility' | 'excluded';
+
+function categorizeMove(moveName: string): MoveCategory {
+  const id = toID(moveName);
+  // Rest heals to full but costs ~2 turns of forced sleep -- and unlike
+  // Recover/Roost/Slack Off, its dex data has neither a `heal` nor a
+  // `status` field to key off at all (confirmed: simulator script logic,
+  // not dex data). Modeling the sleep cost honestly needs a genuinely
+  // different multi-turn treatment, so it's deliberately excluded here
+  // rather than approximated wrong -- see the plan.
+  if (id === REST_ID) return 'excluded';
+  const data = dataGen.moves.get(id);
+  if (!data) return 'utility';
+  if (data.category !== 'Status') return 'attack';
+  if (data.heal) return 'heal';
+  if (selfBoostsFor(moveName)) return 'boost';
+  return 'utility';
+}
+
+// Hazards I could set on the opponent's side (checked against *their* side
+// conditions -- has it already landed) vs. entry hazards already on *my*
+// side (checked when evaluating a switch-in's incoming HP loss, see below).
+const HAZARD_SIDE_CONDITION: Record<string, string> = {
+  stealthrock: 'stealthrock',
+  spikes: 'spikes',
+  toxicspikes: 'toxicspikes',
+  stickyweb: 'stickyweb',
+};
+const SCREEN_SIDE_CONDITION: Record<string, string> = {
+  reflect: 'reflect',
+  lightscreen: 'lightscreen',
+  auroraveil: 'auroraveil',
+};
+// Common status-inflicting moves worth gating on "already applied" -- not
+// exhaustive (deliberately: a false negative here just costs an occasional
+// wasted turn, not a wrong decision, matching the "blanket useful if safe"
+// scope agreed for utility moves).
+const STATUS_INFLICTING_MOVE = new Set([
+  'toxic', 'thunderwave', 'willowisp', 'spore', 'sleeppowder', 'stunspore', 'glare', 'hypnosis', 'darkvoid', 'poisongas',
+]);
+
+function isUtilityMoveAlreadyActive(
+  moveName: string,
+  foeSideConditions: Record<string, { level?: number } | undefined>,
+  mySideConditions: Record<string, { level?: number } | undefined>,
+  foeStatus: string | undefined
+): boolean {
+  const id = toID(moveName);
+  const hazard = HAZARD_SIDE_CONDITION[id];
+  if (hazard) return !!foeSideConditions[hazard];
+  const screen = SCREEN_SIDE_CONDITION[id];
+  if (screen) return !!mySideConditions[screen];
+  if (STATUS_INFLICTING_MOVE.has(id)) return !!foeStatus;
+  return false;
+}
+
+/** Flat entry-hazard chip estimate for switching in -- deliberately a
+ * simplification (doesn't account for the incoming species' type
+ * effectiveness against Stealth Rock, or Flying/Levitate immunity to
+ * Spikes/Toxic Spikes); good enough to stop a switch candidate's HP from
+ * being silently overstated. */
+function estimateEntryHazardPercent(sideConditions: Record<string, { level?: number } | undefined>): number {
+  let percent = 0;
+  if (sideConditions['stealthrock']) percent += 12.5;
+  percent += (sideConditions['spikes']?.level ?? 0) * 12.5;
+  return percent;
+}
+
+export function pickBestByTurnsThenBoost(list: ActionEvaluation[]): ActionEvaluation {
+  return list.reduce((best, c) => {
+    if (c.opponentProposedAvailableTurns < best.opponentProposedAvailableTurns) return c;
+    if (c.opponentProposedAvailableTurns === best.opponentProposedAvailableTurns && c.persistentBoost && !best.persistentBoost) return c;
+    return best;
+  });
+}
+
+/**
+ * Recommends what to do this turn against the opponent's current active
+ * Pokemon (no opponent-switch prediction -- immediate threat only), via a
+ * resource comparison ("available turns") rather than a weighted score. See
+ * /root/.claude/plans/robust-popping-lemur.md for the full design.
+ *
+ * Deliberately compute-only: nothing here sends a /choose to the server.
+ */
+export function recommendAction(report: AnalysisReport, session: BattleSession, repo: RandbatsRepository): RecommendedAction | undefined {
+  if (report.waiting || !report.active) return undefined;
+  const matchup = report.active;
+  if (!session.mySide || (session.mySide !== 'p1' && session.mySide !== 'p2')) return undefined;
+  const mySideId: 'p1' | 'p2' = session.mySide;
+  const mySideObj = mySideId === 'p1' ? session.battle.p1 : session.battle.p2;
+  const foeSideObj = mySideId === 'p1' ? session.battle.p2 : session.battle.p1;
+  const myActive = mySideObj.active[0];
+  const foeActive = foeSideObj.active[0];
+  if (!myActive || !foeActive) return undefined;
+
+  const theirWorstCaseVsMe = Math.max(0, ...matchup.opponentMovesVsYou.map((m) => m.maxPercent));
+  const myCurrentAvailableTurns = availableTurns(matchup.yours.hpPercent, theirWorstCaseVsMe);
+  // "Most likely" speed, not worst/best case -- a single deterministic
+  // recommendation needs one answer, and most-likely is the pragmatic
+  // choice among the three the analyzer already computes.
+  const isFaster = matchup.speed.youAreFasterMostLikely;
+  // Best unboosted attack floor-roll damage -- reused as the "future rate"
+  // for heal/utility lines (neither changes it) without needing to touch
+  // the calc at all, since it's already sitting in yourMovesVsOpponent.
+  const currentBestAttackPercent = Math.max(0, ...matchup.yourMovesVsOpponent.map((m) => m.minPercent));
+
+  const candidates: ActionEvaluation[] = [];
+
+  // --- Attack: already fully computed by the analyzer, one candidate per
+  // confirmed damaging move, no reconstruction needed. ---
+  for (const move of matchup.yourMovesVsOpponent) {
+    if (!move.confirmed) continue;
+    const directDamage = move.minPercent; // floor roll, matches the "guaranteed at worst" principle agreed in design
+    const theirTurns = proposedOpponentTurns(matchup.opponent.hpPercent, directDamage, directDamage);
+    candidates.push({
+      kind: 'attack',
+      label: move.name,
+      myAvailableTurns: myCurrentAvailableTurns,
+      opponentProposedAvailableTurns: theirTurns,
+      favorable: isFavorable(myCurrentAvailableTurns, theirTurns, isFaster),
+      persistentBoost: false,
+    });
+  }
+
+  // --- Boost / heal / utility: these are Status-category moves, invisible
+  // to yourMovesVsOpponent (computeMoveDamage filters Status out), so they
+  // need the live move list directly. ---
+  const nonAttackMoves = myActive.moveSlots.map((m) => ({ name: m.name, category: categorizeMove(m.name) })).filter((m) => m.category !== 'attack' && m.category !== 'excluded');
+
+  let boostReconstruction: { yourCalc: ReturnType<typeof buildYourCalcPokemon>; opponentScenarios: ReturnType<typeof buildOpponentScenarios>; field: ReturnType<typeof buildField> } | undefined;
+  const attackMoveNames = matchup.yourMovesVsOpponent.filter((m) => m.confirmed).map((m) => m.name);
+
+  for (const move of nonAttackMoves) {
+    if (move.category === 'boost') {
+      if (myCurrentAvailableTurns < 1) continue; // can't survive the unprotected setup turn
+      const delta = selfBoostsFor(move.name);
+      if (!delta) continue;
+      if (!boostReconstruction) {
+        const requestStats = getRequestStats(session.battle, mySideObj);
+        boostReconstruction = {
+          yourCalc: buildYourCalcPokemon(myActive, requestStats.get(myActive)),
+          opponentScenarios: buildOpponentScenarios(foeActive, repo, session.damageEvidence.getEvidence(foeActive.speciesForme)),
+          field: buildField(session.battle, mySideId),
+        };
+      }
+      const boostedRate = bestAttackDamagePercent(boostReconstruction.yourCalc, boostReconstruction.opponentScenarios, attackMoveNames, boostReconstruction.field, delta);
+      const theirTurns = proposedOpponentTurns(matchup.opponent.hpPercent, 0, boostedRate);
+      candidates.push({
+        kind: 'boost',
+        label: move.name,
+        myAvailableTurns: myCurrentAvailableTurns,
+        opponentProposedAvailableTurns: theirTurns,
+        favorable: isFavorable(myCurrentAvailableTurns, theirTurns, isFaster),
+        persistentBoost: true,
+      });
+    } else if (move.category === 'heal') {
+      const healFraction = dataGen.moves.get(toID(move.name))?.heal;
+      if (!healFraction) continue;
+      const healPercent = (healFraction[0] / healFraction[1]) * 100;
+      const myTurnsAfterHeal = availableTurns(Math.min(100, matchup.yours.hpPercent + healPercent), theirWorstCaseVsMe);
+      const theirTurns = proposedOpponentTurns(matchup.opponent.hpPercent, 0, currentBestAttackPercent);
+      candidates.push({
+        kind: 'heal',
+        label: move.name,
+        myAvailableTurns: myTurnsAfterHeal,
+        opponentProposedAvailableTurns: theirTurns,
+        favorable: isFavorable(myTurnsAfterHeal, theirTurns, isFaster),
+        persistentBoost: false,
+      });
+    } else {
+      // utility -- gated by slack, and by whether its effect is already active
+      if (myCurrentAvailableTurns <= SLACK_THRESHOLD) continue;
+      if (isUtilityMoveAlreadyActive(move.name, foeSideObj.sideConditions as any, mySideObj.sideConditions as any, matchup.opponent.status)) continue;
+      const theirTurns = proposedOpponentTurns(matchup.opponent.hpPercent, 0, currentBestAttackPercent);
+      candidates.push({
+        kind: 'utility',
+        label: move.name,
+        myAvailableTurns: myCurrentAvailableTurns,
+        opponentProposedAvailableTurns: theirTurns,
+        favorable: true, // eligibility is the gate, not the race
+        persistentBoost: false,
+      });
+    }
+  }
+
+  // --- Switch: bench matchups are already fully computed by the analyzer. ---
+  for (const bench of report.bench) {
+    const theirWorstCaseVsBench = Math.max(0, ...bench.opponentMovesVsYou.map((m) => m.maxPercent));
+    const hazardChip = estimateEntryHazardPercent(mySideObj.sideConditions as any);
+    const hpAfterHazards = Math.max(0, bench.yours.hpPercent - hazardChip);
+    const myTurns = availableTurns(hpAfterHazards, theirWorstCaseVsBench);
+    const bestSwitchInAttack = Math.max(0, ...bench.yourMovesVsOpponent.filter((m) => m.confirmed).map((m) => m.minPercent));
+    const theirTurns = proposedOpponentTurns(matchup.opponent.hpPercent, 0, bestSwitchInAttack);
+    candidates.push({
+      kind: 'switch',
+      label: `Switch to ${bench.yours.species}`,
+      myAvailableTurns: myTurns,
+      opponentProposedAvailableTurns: theirTurns,
+      favorable: isFavorable(myTurns, theirTurns, bench.speed.youAreFasterMostLikely),
+      persistentBoost: false,
+    });
+  }
+
+  if (candidates.length === 0) return undefined;
+
+  // --- Decision order: utility (if eligible) > best favorable stay-and-act
+  // > best favorable switch > least-bad fallback. ---
+  const eligibleUtility = candidates.find((c) => c.kind === 'utility');
+  if (eligibleUtility) {
+    return { action: eligibleUtility, verdict: 'favorable', alternatives: candidates.filter((c) => c !== eligibleUtility) };
+  }
+
+  const stayActions = candidates.filter((c) => c.kind === 'attack' || c.kind === 'boost' || c.kind === 'heal');
+  const favorableStay = stayActions.filter((c) => c.favorable);
+  if (favorableStay.length > 0) {
+    const winner = pickBestByTurnsThenBoost(favorableStay);
+    return { action: winner, verdict: 'favorable', alternatives: candidates.filter((c) => c !== winner) };
+  }
+
+  const switchActions = candidates.filter((c) => c.kind === 'switch');
+  const favorableSwitch = switchActions.filter((c) => c.favorable);
+  if (favorableSwitch.length > 0) {
+    const winner = pickBestByTurnsThenBoost(favorableSwitch);
+    return { action: winner, verdict: 'favorable', alternatives: candidates.filter((c) => c !== winner) };
+  }
+
+  const leastBad = candidates.reduce((best, c) => ((c.myAvailableTurns - c.opponentProposedAvailableTurns) > (best.myAvailableTurns - best.opponentProposedAvailableTurns) ? c : best));
+  return { action: leastBad, verdict: 'losing', alternatives: candidates.filter((c) => c !== leastBad) };
+}

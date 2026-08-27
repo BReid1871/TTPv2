@@ -13,6 +13,10 @@ export interface MoveDamageReport {
   confirmed: boolean;
   /** only set for unconfirmed (candidate) moves */
   probability?: number;
+  /** only set for a two-turn charge move (Solar Beam, Fly, ...): whether
+   * using it right now would be instant (weather match / Power Herb) or
+   * take the full two turns */
+  chargeNotice?: string;
 }
 
 export interface SpeedReport {
@@ -40,6 +44,10 @@ export interface OpponentSetInfo {
   teraType: { known?: string; possible: WeightedOption[] };
   revealedMoves: string[];
   possibleRemainingMoves: WeightedOption[];
+  /** set while this Pokemon is mid-charge on a semi-invulnerability move
+   * (Fly, Dig, Dive, Bounce, Phantom Force, Shadow Force) -- the move name
+   * as sent by the server, e.g. 'Fly' */
+  chargingMove?: string;
 }
 
 export interface YourPokemonInfo {
@@ -49,6 +57,7 @@ export interface YourPokemonInfo {
   status?: string;
   fainted: boolean;
   isActive: boolean;
+  chargingMove?: string;
 }
 
 export interface PokemonMatchup {
@@ -69,4 +78,7 @@ export interface AnalysisReport {
   active?: PokemonMatchup;
   bench: PokemonMatchup[];
   opponentRevealedBench: OpponentSetInfo[];
+  /** computed separately (see src/decision/recommendAction.ts) and attached
+   * by the caller -- compute-only, nothing sends this to the server */
+  recommendedAction?: import('../decision/types.js').RecommendedAction;
 }
