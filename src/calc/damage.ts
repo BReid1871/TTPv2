@@ -193,34 +193,50 @@ export interface MoveDamageResult {
 }
 
 /** For a variable-hit move (multihit: [min, max], e.g. Bullet Seed's 2-5),
- * @smogon/calc's Move defaults to a single fixed hit count (3, the
- * statistical mean) unless told otherwise -- which understates both the
- * best case (as few as `min` hits) and, more importantly for judging a KO,
- * the worst case (as many as `max` hits). Returns the real [min, max] hit
- * counts to compute against, or undefined for a fixed-hit-count move
- * (Double Kick, Triple Kick, ...) or one with no multi-hit at all. */
-function variableHitRange(moveName: string): [number, number] | undefined {
+ * @smogon/calc's Move only ever defaults to a single fixed hit count
+ * unless told otherwise (3, the statistical mean, UNLESS an 'ability'
+ * option of 'Skill Link' is passed to the Move constructor directly --
+ * which this app never did, so Skill Link was never actually modeled
+ * either, before or after the fix this replaces). Neither hit-count-
+ * modifying ability/item is auto-detected by @smogon/calc from the
+ * attacker Pokemon, so both are handled here:
+ *  - Skill Link: always hits the maximum number of times (no low end).
+ *  - Loaded Dice (not modeled by @smogon/calc at all): guarantees at
+ *    least 4 hits for a 2-5 move (raises the floor, doesn't touch the
+ *    ceiling).
+ * Returns [minHits, maxHits, centralHits] -- central is what koChance
+ * is computed against: the single most representative hit count (still
+ * 3 normally, but 5 for Skill Link, 4 for Loaded Dice's ~87.5%-likely
+ * floor case) -- or undefined for a fixed-hit-count move (Double Kick,
+ * Triple Kick, ...) or one with no multi-hit at all. */
+function variableHitCounts(moveName: string, attacker: CalcPokemon): [number, number, number] | undefined {
   const multihit = calcGen.moves.get(toID(moveName))?.multihit;
-  return Array.isArray(multihit) ? [multihit[0], multihit[1]] : undefined;
+  if (!Array.isArray(multihit)) return undefined;
+  const [rawMin, rawMax] = multihit;
+  if (attacker.hasAbility('Skill Link')) return [rawMax, rawMax, rawMax];
+  if (attacker.hasItem('Loaded Dice')) return [Math.max(rawMin, 4), rawMax, 4];
+  return [rawMin, rawMax, rawMin + 1];
 }
 
 /** Computes min/max damage as a percentage of the defender's max HP. */
 export function computeMoveDamage(attacker: CalcPokemon, defender: CalcPokemon, moveName: string, field: CalcField): MoveDamageResult | undefined {
   try {
-    const move = new CalcMove(calcGen, moveName);
-    if (move.category === 'Status' || move.bp === 0) return undefined;
-    const result = calculate(calcGen, attacker, defender, move, field);
     const maxHp = defender.maxHP();
 
-    const hitRange = variableHitRange(moveName);
+    const hitCounts = variableHitCounts(moveName, attacker);
     let min: number;
     let max: number;
-    if (hitRange) {
-      const [minHits, maxHits] = hitRange;
+    let koChanceMove: CalcMove;
+    if (hitCounts) {
+      const [minHits, maxHits, centralHits] = hitCounts;
       min = calculate(calcGen, attacker, defender, new CalcMove(calcGen, moveName, { hits: minHits } as any), field).range()[0];
       max = calculate(calcGen, attacker, defender, new CalcMove(calcGen, moveName, { hits: maxHits } as any), field).range()[1];
+      koChanceMove = new CalcMove(calcGen, moveName, { hits: centralHits } as any);
     } else {
-      [min, max] = result.range();
+      const move = new CalcMove(calcGen, moveName);
+      if (move.category === 'Status' || move.bp === 0) return undefined;
+      [min, max] = calculate(calcGen, attacker, defender, move, field).range();
+      koChanceMove = move;
     }
     const minPercent = Math.min(100, (min / maxHp) * 100);
     const maxPercent = Math.min(100, (max / maxHp) * 100);
@@ -228,14 +244,14 @@ export function computeMoveDamage(attacker: CalcPokemon, defender: CalcPokemon, 
     // guaranteed-0-damage hit (e.g. a full type immunity) instead of
     // reporting "won't KO" -- that's a real outcome, not a calc error, so
     // it must not fall through to the outer catch and drop the whole move.
-    // For a variable-hit move, this still reflects the default (mean-hit-
-    // count) scenario rather than the widened range above -- matches how
-    // koChance is described everywhere else in the app (the single most
-    // representative case), rather than mixing a worst-case KO claim with
-    // a best-case-anchored minPercent.
+    // For a variable-hit move, this reflects the single most representative
+    // hit count (see variableHitCounts) rather than the widened range
+    // above -- matches how koChance is described everywhere else in the
+    // app (the single most representative case), rather than mixing a
+    // worst-case KO claim with a best-case-anchored minPercent.
     let koChance: string | undefined;
     try {
-      koChance = result.kochance().text;
+      koChance = calculate(calcGen, attacker, defender, koChanceMove, field).kochance().text;
     } catch {
       koChance = undefined;
     }
