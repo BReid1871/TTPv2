@@ -2,11 +2,14 @@ import type { Pokemon as ClientPokemon, Side as ClientSide } from '@pkmn/client'
 import type { Pokemon as CalcPokemon } from '@smogon/calc';
 import { toID, type ID } from '@pkmn/data';
 import type { BattleSession } from '../battle/battleSession.js';
+import { getRequestStats } from '../battle/requestStats.js';
 import type { RandbatsRepository } from '../randbats/data.js';
 import { narrowSet, buildSetCandidates, type PokemonRevealState, type SetCandidate } from '../randbats/setTracker.js';
 import { buildKnownPokemon, buildCandidatePokemon, buildField, computeMoveDamage, calcGen } from '../calc/damage.js';
 import { compareSpeed } from '../calc/speed.js';
 import type { AnalysisReport, MoveDamageReport, OpponentSetInfo, PokemonMatchup, SpeedReport, YourPokemonInfo } from './types.js';
+import type { DamageEvidence } from '../battle/damageEvidence.js';
+import { filterCandidatesByEvidence, distributionFrom, roleNamesFrom } from './itemInference.js';
 
 const MAX_CANDIDATE_SCENARIOS = 5;
 const MIN_MOVE_PROBABILITY_TO_SHOW = 0.08;
@@ -57,9 +60,30 @@ function displayItemName(id: string): string {
   return calcGen.items.get(toID(id))?.name ?? id;
 }
 
-function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: boolean): OpponentSetInfo {
+function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: boolean, evidence: DamageEvidence[]): OpponentSetInfo {
   const reveal = toRevealState(p);
   const narrowed = narrowSet(reveal, repo);
+
+  // Structural narrowing (ability/item/moves already revealed) comes from
+  // narrowSet above. On top of that, cross-check accumulated damage
+  // evidence against every remaining candidate and drop whichever ones
+  // couldn't have produced an observed hit -- e.g. a Choice Band-only
+  // amount of damage rules out every non-Choice-Band item candidate. Only
+  // applied when the field isn't already directly confirmed (a real reveal
+  // always wins over an inference).
+  let candidateRoles = narrowed.candidateRoleNames;
+  let ability = narrowed.ability;
+  let item = narrowed.item;
+  if (evidence.length > 0 && (!narrowed.ability.known || !narrowed.item.known)) {
+    const allCandidates = buildSetCandidates(reveal, repo, Infinity);
+    const survivors = filterCandidatesByEvidence(allCandidates, evidence);
+    if (survivors.length < allCandidates.length) {
+      candidateRoles = roleNamesFrom(survivors);
+      if (!narrowed.ability.known) ability = { known: undefined, possible: distributionFrom(survivors, (c) => displayAbilityName(c.ability)) };
+      if (!narrowed.item.known) item = { known: undefined, possible: distributionFrom(survivors, (c) => displayItemName(c.item)) };
+    }
+  }
+
   return {
     ident: p.ident,
     species: p.speciesForme,
@@ -69,9 +93,9 @@ function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: bo
     fainted: p.fainted,
     isActive,
     dataFound: narrowed.found,
-    candidateRoles: narrowed.candidateRoleNames,
-    ability: { ...narrowed.ability, known: narrowed.ability.known ? displayAbilityName(narrowed.ability.known) : undefined },
-    item: { ...narrowed.item, known: narrowed.item.known ? displayItemName(narrowed.item.known) : undefined },
+    candidateRoles,
+    ability: { ...ability, known: ability.known ? displayAbilityName(ability.known) : undefined },
+    item: { ...item, known: item.known ? displayItemName(item.known) : undefined },
     teraType: narrowed.teraType,
     revealedMoves: narrowed.revealedMoves.map(displayMoveName),
     possibleRemainingMoves: narrowed.possibleRemainingMoves.filter((m) => m.probability >= MIN_MOVE_PROBABILITY_TO_SHOW),
@@ -87,8 +111,13 @@ function buildYourCalcPokemon(p: ClientPokemon, stats?: { atk: number; def: numb
   return buildKnownPokemon(p.speciesForme, {
     speciesForme: p.speciesForme,
     level: p.level,
-    ability: p.ability,
-    item: p.item,
+    // @smogon/calc's hasAbility()/hasItem() do exact-string matching against
+    // display names ('Life Orb'), not @pkmn/client's lowercase IDs
+    // ('lifeorb') -- passing the ID form silently disables every held-item
+    // and ability effect (Choice items, Life Orb, Assault Vest, Supreme
+    // Overlord, ...) for your own team's damage calc without ever erroring.
+    ability: p.ability ? displayAbilityName(p.ability) : p.ability,
+    item: p.item ? displayItemName(p.item) : p.item,
     status: p.status,
     teraType: p.terastallized,
     isTerastallized: !!p.terastallized,
@@ -119,9 +148,9 @@ interface CandidateScenario {
   calcPokemon: CalcPokemon;
 }
 
-function buildOpponentScenarios(p: ClientPokemon, repo: RandbatsRepository): CandidateScenario[] {
+function buildOpponentScenarios(p: ClientPokemon, repo: RandbatsRepository, evidence: DamageEvidence[]): CandidateScenario[] {
   const reveal = toRevealState(p);
-  const candidates = buildSetCandidates(reveal, repo, MAX_CANDIDATE_SCENARIOS);
+  const candidates = filterCandidatesByEvidence(buildSetCandidates(reveal, repo, MAX_CANDIDATE_SCENARIOS), evidence);
   if (candidates.length === 0) {
     // Unknown to randbats data (e.g. not a Random Battle format, or a
     // species missing from the set): fall back to a "bare" Pokemon using
@@ -309,10 +338,11 @@ function buildMatchup(
 ): PokemonMatchup {
   const field = buildField(session.battle, yourSideId);
   const yourCalc = buildYourCalcPokemon(yourPokemon, requestStats.get(yourPokemon));
-  const opponentScenarios = buildOpponentScenarios(opponentPokemon, repo);
+  const evidence = session.damageEvidence.getEvidence(opponentPokemon.speciesForme);
+  const opponentScenarios = buildOpponentScenarios(opponentPokemon, repo, evidence);
 
   const yourMoves = yourPokemon.moveSlots.map((m) => ({ name: m.name, confirmed: true }));
-  const opponentInfo = toOpponentInfo(opponentPokemon, repo, isOpponentActive);
+  const opponentInfo = toOpponentInfo(opponentPokemon, repo, isOpponentActive, evidence);
   const opponentMoveList = [
     ...opponentInfo.revealedMoves.map((name) => ({ name, confirmed: true })),
     ...opponentInfo.possibleRemainingMoves.map((m) => ({ name: m.name, confirmed: false, probability: m.probability })),
@@ -353,14 +383,7 @@ export function analyzeBattle(session: BattleSession, repo: RandbatsRepository):
     return { ...base, waitingReason: 'Waiting for both sides to have an active Pokemon...' };
   }
 
-  const requestStats = new Map<ClientPokemon, { atk: number; def: number; spa: number; spd: number; spe: number }>();
-  const request = session.battle.request;
-  if (request?.side) {
-    request.side.pokemon.forEach((rp, i) => {
-      const clientMon = mySideObj.team[i];
-      if (clientMon && rp.stats) requestStats.set(clientMon, rp.stats as any);
-    });
-  }
+  const requestStats = getRequestStats(session.battle, mySideObj);
 
   const active = buildMatchup(myActive, foeActive, session, mySideId, repo, requestStats, true, true);
 
@@ -370,7 +393,7 @@ export function analyzeBattle(session: BattleSession, repo: RandbatsRepository):
 
   const opponentRevealedBench = foeSideObj.team
     .filter((p) => p !== foeActive && !p.fainted)
-    .map((p) => toOpponentInfo(p, repo, false));
+    .map((p) => toOpponentInfo(p, repo, false, session.damageEvidence.getEvidence(p.speciesForme)));
 
   return {
     ...base,
