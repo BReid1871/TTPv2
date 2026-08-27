@@ -1,14 +1,21 @@
 import { toID } from '@pkmn/data';
 import type { Protocol } from '@pkmn/protocol';
 import { config } from '../config.js';
-import type { ShowdownConnection } from '../showdown/connection.js';
+import type { ShowdownConnection, SearchState } from '../showdown/connection.js';
 import type { BattleManager } from '../showdown/battleManager.js';
 import type { BattleSession } from '../battle/battleSession.js';
 import type { RandbatsRepository } from '../randbats/data.js';
 import { recommendForcedSwitch } from '../decision/recommendAction.js';
 import type { AnalysisReport } from '../analysis/types.js';
 
-const SEARCH_RETRY_MS = 10_000;
+// Last-resort-only backstop (see queueNextBattle) -- normal matchmaking
+// waits routinely exceed this by a lot, so it must never be short enough to
+// fire during a healthy search.
+const SEARCH_STALL_MS = 90_000;
+// Grace period after issuing /search before trusting a |updatesearch| that
+// doesn't yet list our format -- the server's own confirmation for *this*
+// search can lag a beat behind an unrelated push that arrives first.
+const SEARCH_CONFIRM_GRACE_MS = 3_000;
 
 /**
  * Automated-mode-only: queues for its own Random Battles and plays them
@@ -19,6 +26,7 @@ const SEARCH_RETRY_MS = 10_000;
  */
 export class AutoPlayer {
   private searching = false;
+  private searchIssuedAt = 0;
   /** roomid -> rqid of the last request we already sent a /choose for, so a
    * re-run of the debounced analysis pass on the same request doesn't
    * double-act. */
@@ -36,6 +44,9 @@ export class AutoPlayer {
       this.actedOn.delete(session.roomid);
       this.queueNextBattle();
     });
+    // The server's own confirmation of our search state -- the authoritative
+    // signal for whether we're actually still queued (see handleSearchUpdate).
+    conn.on('updatesearch', (state: SearchState) => this.handleSearchUpdate(state));
     conn.on('line', (roomid: string, line: string) => {
       if (line.startsWith('|error|')) this.handleError(roomid, line);
     });
@@ -49,16 +60,37 @@ export class AutoPlayer {
   private queueNextBattle(): void {
     if (this.searching || this.manager.sessions.size > 0) return;
     this.searching = true;
+    this.searchIssuedAt = Date.now();
     this.conn.search(config.randbatsFormat);
-    // Belt-and-suspenders: if this search never turns into a battle (a
-    // dropped |updatesearch|, a server hiccup), retry rather than sitting
-    // idle forever.
+    // Last-resort-only backstop: if the server never confirms we're
+    // searching at all (a dropped |updatesearch|, a server hiccup), don't
+    // sit idle forever. handleSearchUpdate (driven by the server's own
+    // |updatesearch| pushes) is the primary, much faster-reacting signal --
+    // this only covers that one message never arriving in the first place.
     setTimeout(() => {
       if (this.searching && this.manager.sessions.size === 0) {
         this.searching = false;
         this.queueNextBattle();
       }
-    }, SEARCH_RETRY_MS).unref?.();
+    }, SEARCH_STALL_MS).unref?.();
+  }
+
+  /** |updatesearch| is the server's own authoritative statement of what
+   * we're currently queued for -- re-sending /search on a blind timer
+   * instead (the previous approach) is actively harmful, because /search
+   * for a format you're already searching *cancels* that search rather
+   * than confirming it, and a normal matchmaking wait routinely runs well
+   * past any short timeout. Only retry once the server itself confirms
+   * we've dropped out of the queue without landing a match. */
+  private handleSearchUpdate(state: SearchState): void {
+    if (!this.searching) return;
+    if (Date.now() - this.searchIssuedAt < SEARCH_CONFIRM_GRACE_MS) return;
+    const stillSearching = (state.searching ?? []).includes(config.randbatsFormat);
+    if (stillSearching) return;
+    if (this.manager.sessions.size === 0) {
+      this.searching = false;
+      this.queueNextBattle();
+    }
   }
 
   /** A /choose the server rejected (e.g. we recommended a switch while
