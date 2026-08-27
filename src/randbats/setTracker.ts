@@ -54,6 +54,30 @@ function hasId(list: string[], id: string): boolean {
   return list.some((entry) => toID(entry) === wantId);
 }
 
+function asArray(value: unknown): string[] {
+  return Array.isArray(value) ? value : [];
+}
+
+/** The community-maintained randbats JSON is fetched over the network and
+ * only ever cast to RandbatsRole at the type level -- nothing actually
+ * validates it matches at runtime. Confirmed in production: some
+ * species/role entries don't carry `items` (and, by the same risk,
+ * possibly `abilities`/`teraTypes`/`moves`) as an array, which crashed
+ * every downstream `for (const item of role.items)` with "items is not
+ * iterable". Normalizing once here, used everywhere a role's fields are
+ * read, means a sparse/malformed entry just narrows less rather than
+ * taking the whole analysis down. */
+function normalizeRole(role: RandbatsRole): { abilities: string[]; items: string[]; teraTypes: string[]; moves: string[]; evs: RandbatsRole['evs']; ivs: RandbatsRole['ivs'] } {
+  return {
+    abilities: asArray(role.abilities),
+    items: asArray(role.items),
+    teraTypes: asArray(role.teraTypes),
+    moves: asArray(role.moves),
+    evs: role.evs,
+    ivs: role.ivs,
+  };
+}
+
 function accumulate(dist: Map<string, number>, options: string[], totalWeight: number): void {
   if (options.length === 0) return;
   const each = totalWeight / options.length;
@@ -72,11 +96,12 @@ function roleMatches(
   role: RandbatsRole,
   info: { knownAbility?: string; knownItem?: string; knownTera?: string; revealedMoves: string[] }
 ): boolean {
-  if (info.knownAbility && !hasId(role.abilities, info.knownAbility)) return false;
-  if (info.knownItem && !hasId(role.items, info.knownItem)) return false;
-  if (info.knownTera && !hasId(role.teraTypes, info.knownTera)) return false;
+  const r = normalizeRole(role);
+  if (info.knownAbility && !hasId(r.abilities, info.knownAbility)) return false;
+  if (info.knownItem && !hasId(r.items, info.knownItem)) return false;
+  if (info.knownTera && !hasId(r.teraTypes, info.knownTera)) return false;
   for (const moveId of info.revealedMoves) {
-    if (!hasId(role.moves, moveId)) return false;
+    if (!hasId(r.moves, moveId)) return false;
   }
   return true;
 }
@@ -127,7 +152,8 @@ export function narrowSet(pokemon: PokemonRevealState, repo: RandbatsRepository)
   const teraDist = new Map<string, number>();
   const moveDist = new Map<string, number>();
 
-  for (const [, role] of roleEntries) {
+  for (const [, rawRole] of roleEntries) {
+    const role = normalizeRole(rawRole);
     accumulate(abilityDist, role.abilities, roleWeight);
     accumulate(itemDist, role.items, roleWeight);
     accumulate(teraDist, role.teraTypes, roleWeight);
@@ -193,7 +219,8 @@ export function buildSetCandidates(
   const roleWeight = 1 / roleEntries.length;
   const candidates: SetCandidate[] = [];
 
-  for (const [roleName, role] of roleEntries) {
+  for (const [roleName, rawRole] of roleEntries) {
+    const role = normalizeRole(rawRole);
     // knownAbility/knownItem come straight from @pkmn/client's live battle
     // state, which is always lowercase ID form ('protosynthesis'), not the
     // display-name form ('Protosynthesis') @smogon/calc's hasAbility()/
