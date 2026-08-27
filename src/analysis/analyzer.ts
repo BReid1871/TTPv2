@@ -7,9 +7,10 @@ import type { RandbatsRepository } from '../randbats/data.js';
 import { narrowSet, buildSetCandidates, type PokemonRevealState, type SetCandidate } from '../randbats/setTracker.js';
 import { buildKnownPokemon, buildCandidatePokemon, buildField, computeMoveDamage, calcGen } from '../calc/damage.js';
 import { compareSpeed } from '../calc/speed.js';
-import type { AnalysisReport, MoveDamageReport, OpponentSetInfo, PokemonMatchup, SpeedReport, YourPokemonInfo } from './types.js';
+import type { AnalysisReport, MoveDamageReport, OpponentSetInfo, PokemonMatchup, SpeedReport, WeightedOption, YourPokemonInfo } from './types.js';
 import type { DamageEvidence } from '../battle/damageEvidence.js';
 import { filterCandidatesByEvidence, distributionFrom, roleNamesFrom } from './itemInference.js';
+import { chargeNoticeFor, semiInvulnerabilityOutcome } from './chargeMoves.js';
 
 const MAX_CANDIDATE_SCENARIOS = 5;
 const MIN_MOVE_PROBABILITY_TO_SHOW = 0.08;
@@ -37,7 +38,7 @@ function hpFraction(p: ClientPokemon): number {
   return Math.max(0, Math.min(1, p.hp / p.maxhp));
 }
 
-function toYourInfo(p: ClientPokemon, isActive: boolean): YourPokemonInfo {
+function toYourInfo(p: ClientPokemon, isActive: boolean, chargingMove?: string): YourPokemonInfo {
   return {
     ident: p.ident,
     species: p.speciesForme,
@@ -45,6 +46,7 @@ function toYourInfo(p: ClientPokemon, isActive: boolean): YourPokemonInfo {
     status: p.status,
     fainted: p.fainted,
     isActive,
+    chargingMove,
   };
 }
 
@@ -60,7 +62,7 @@ function displayItemName(id: string): string {
   return calcGen.items.get(toID(id))?.name ?? id;
 }
 
-function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: boolean, evidence: DamageEvidence[]): OpponentSetInfo {
+function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: boolean, evidence: DamageEvidence[], chargingMove?: string): OpponentSetInfo {
   const reveal = toRevealState(p);
   const narrowed = narrowSet(reveal, repo);
 
@@ -99,6 +101,7 @@ function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: bo
     teraType: narrowed.teraType,
     revealedMoves: narrowed.revealedMoves.map(displayMoveName),
     possibleRemainingMoves: narrowed.possibleRemainingMoves.filter((m) => m.probability >= MIN_MOVE_PROBABILITY_TO_SHOW),
+    chargingMove,
   };
 }
 
@@ -197,20 +200,41 @@ function pickMostLikelyOutcome(
   return best ? { mostLikely: (best.minPercent + best.maxPercent) / 2, koChance: best.koChance } : {};
 }
 
-/** Damage from a fixed attacker into a set of candidate defender scenarios. */
+interface AttackerItemInfo {
+  known?: string;
+  possible?: WeightedOption[];
+}
+
+/** Damage from a fixed attacker into a set of candidate defender scenarios.
+ * `defenderChargingMove` is the move (e.g. 'Fly') the defender is currently
+ * mid-charge on, if any -- moves that can't hit a semi-invulnerable target
+ * are reported as a flat 0%/0% ("it just misses") rather than their normal,
+ * misleading full-HP damage range; a bypass move (Earthquake vs. Dig, ...)
+ * gets its real base-power bonus folded into the same calculate() call so
+ * the reported range and koChance stay consistent with each other. */
 function movesVsCandidateDefenders(
   moves: Array<{ name: string; confirmed: boolean; probability?: number }>,
   attacker: CalcPokemon,
   defenderScenarios: CandidateScenario[],
-  field: ReturnType<typeof buildField>
+  field: ReturnType<typeof buildField>,
+  weather: string | undefined,
+  attackerItem: AttackerItemInfo,
+  defenderChargingMove: string | undefined
 ): MoveDamageReport[] {
   const reports: MoveDamageReport[] = [];
   for (const move of moves) {
+    const chargeNotice = chargeNoticeFor(move.name, weather, attackerItem);
+    const semiInvuln = semiInvulnerabilityOutcome(move.name, defenderChargingMove);
+    if (semiInvuln === 'immune') {
+      reports.push({ name: move.name, minPercent: 0, maxPercent: 0, confirmed: move.confirmed, probability: move.probability, chargeNotice });
+      continue;
+    }
+    const basePowerMultiplier = typeof semiInvuln === 'number' ? semiInvuln : 1;
     let min = Infinity;
     let max = -Infinity;
     const outcomes: Array<{ probability: number; minPercent: number; maxPercent: number; koChance?: string }> = [];
     for (const scenario of defenderScenarios) {
-      const result = computeMoveDamage(attacker, scenario.calcPokemon, move.name, field);
+      const result = computeMoveDamage(attacker, scenario.calcPokemon, move.name, field, basePowerMultiplier);
       if (!result) continue;
       min = Math.min(min, result.minPercent);
       max = Math.max(max, result.maxPercent);
@@ -226,25 +250,39 @@ function movesVsCandidateDefenders(
       koChance,
       confirmed: move.confirmed,
       probability: move.probability,
+      chargeNotice,
     });
   }
   return reports.sort((a, b) => (b.mostLikelyPercent ?? b.maxPercent) - (a.mostLikelyPercent ?? a.maxPercent));
 }
 
-/** Damage from a set of candidate attacker scenarios into a fixed defender. */
+/** Damage from a set of candidate attacker scenarios into a fixed defender.
+ * Mirrors movesVsCandidateDefenders's semi-invulnerability handling, but for
+ * the opposite direction (defenderChargingMove here is "am I -- the fixed
+ * defender -- currently semi-invulnerable"). */
 function movesFromCandidateAttackers(
   moves: Array<{ name: string; confirmed: boolean; probability?: number }>,
   attackerScenarios: CandidateScenario[],
   defender: CalcPokemon,
-  field: ReturnType<typeof buildField>
+  field: ReturnType<typeof buildField>,
+  weather: string | undefined,
+  attackerItem: AttackerItemInfo,
+  defenderChargingMove: string | undefined
 ): MoveDamageReport[] {
   const reports: MoveDamageReport[] = [];
   for (const move of moves) {
+    const chargeNotice = chargeNoticeFor(move.name, weather, attackerItem);
+    const semiInvuln = semiInvulnerabilityOutcome(move.name, defenderChargingMove);
+    if (semiInvuln === 'immune') {
+      reports.push({ name: move.name, minPercent: 0, maxPercent: 0, confirmed: move.confirmed, probability: move.probability, chargeNotice });
+      continue;
+    }
+    const basePowerMultiplier = typeof semiInvuln === 'number' ? semiInvuln : 1;
     let min = Infinity;
     let max = -Infinity;
     const outcomes: Array<{ probability: number; minPercent: number; maxPercent: number; koChance?: string }> = [];
     for (const scenario of attackerScenarios) {
-      const result = computeMoveDamage(scenario.calcPokemon, defender, move.name, field);
+      const result = computeMoveDamage(scenario.calcPokemon, defender, move.name, field, basePowerMultiplier);
       if (!result) continue;
       min = Math.min(min, result.minPercent);
       max = Math.max(max, result.maxPercent);
@@ -260,6 +298,7 @@ function movesFromCandidateAttackers(
       koChance,
       confirmed: move.confirmed,
       probability: move.probability,
+      chargeNotice,
     });
   }
   return reports.sort((a, b) => (b.mostLikelyPercent ?? b.maxPercent) - (a.mostLikelyPercent ?? a.maxPercent));
@@ -337,22 +376,29 @@ function buildMatchup(
   isOpponentActive: boolean
 ): PokemonMatchup {
   const field = buildField(session.battle, yourSideId);
+  const weather = session.battle.field.weather || undefined;
   const yourCalc = buildYourCalcPokemon(yourPokemon, requestStats.get(yourPokemon));
   const evidence = session.damageEvidence.getEvidence(opponentPokemon.speciesForme);
   const opponentScenarios = buildOpponentScenarios(opponentPokemon, repo, evidence);
 
+  const yourChargingMove = session.chargeState.chargingMove(yourPokemon.ident);
+  const opponentChargingMove = session.chargeState.chargingMove(opponentPokemon.ident);
+  // your own item is always known exactly (unlike the opponent's, which is
+  // only ever a probability distribution until revealed).
+  const yourItem: AttackerItemInfo = { known: yourPokemon.item ? displayItemName(yourPokemon.item) : 'None' };
+
   const yourMoves = yourPokemon.moveSlots.map((m) => ({ name: m.name, confirmed: true }));
-  const opponentInfo = toOpponentInfo(opponentPokemon, repo, isOpponentActive, evidence);
+  const opponentInfo = toOpponentInfo(opponentPokemon, repo, isOpponentActive, evidence, opponentChargingMove);
   const opponentMoveList = [
     ...opponentInfo.revealedMoves.map((name) => ({ name, confirmed: true })),
     ...opponentInfo.possibleRemainingMoves.map((m) => ({ name: m.name, confirmed: false, probability: m.probability })),
   ];
 
   return {
-    yours: toYourInfo(yourPokemon, isYoursActive),
+    yours: toYourInfo(yourPokemon, isYoursActive, yourChargingMove),
     opponent: opponentInfo,
-    yourMovesVsOpponent: movesVsCandidateDefenders(yourMoves, yourCalc, opponentScenarios, field),
-    opponentMovesVsYou: movesFromCandidateAttackers(opponentMoveList, opponentScenarios, yourCalc, field),
+    yourMovesVsOpponent: movesVsCandidateDefenders(yourMoves, yourCalc, opponentScenarios, field, weather, yourItem, opponentChargingMove),
+    opponentMovesVsYou: movesFromCandidateAttackers(opponentMoveList, opponentScenarios, yourCalc, field, weather, opponentInfo.item, yourChargingMove),
     speed: buildSpeedReport(yourCalc, opponentScenarios, session, yourSideId),
   };
 }
@@ -393,7 +439,7 @@ export function analyzeBattle(session: BattleSession, repo: RandbatsRepository):
 
   const opponentRevealedBench = foeSideObj.team
     .filter((p) => p !== foeActive && !p.fainted)
-    .map((p) => toOpponentInfo(p, repo, false, session.damageEvidence.getEvidence(p.speciesForme)));
+    .map((p) => toOpponentInfo(p, repo, false, session.damageEvidence.getEvidence(p.speciesForme), session.chargeState.chargingMove(p.ident)));
 
   return {
     ...base,

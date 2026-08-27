@@ -218,10 +218,17 @@ function variableHitCounts(moveName: string, attacker: CalcPokemon): [number, nu
   return [rawMin, rawMax, rawMin + 1];
 }
 
-/** Computes min/max damage as a percentage of the defender's max HP. */
-export function computeMoveDamage(attacker: CalcPokemon, defender: CalcPokemon, moveName: string, field: CalcField): MoveDamageResult | undefined {
+/** Computes min/max damage as a percentage of the defender's max HP.
+ * `basePowerMultiplier` (default 1) scales the move's base power before any
+ * other calc happens -- used for e.g. Earthquake/Magnitude's real 2x bonus
+ * against a Dig-ing target, so both the resulting range AND koChance stay
+ * consistent (rather than doubling the output percentages after the fact,
+ * which would leave koChance describing the wrong, unmultiplied hit). */
+export function computeMoveDamage(attacker: CalcPokemon, defender: CalcPokemon, moveName: string, field: CalcField, basePowerMultiplier = 1): MoveDamageResult | undefined {
   try {
     const maxHp = defender.maxHP();
+    const baseBp = calcGen.moves.get(toID(moveName))?.basePower ?? 0;
+    const bpOverride = basePowerMultiplier !== 1 ? { basePower: Math.round(baseBp * basePowerMultiplier) } : undefined;
 
     const hitCounts = variableHitCounts(moveName, attacker);
     let min: number;
@@ -229,11 +236,11 @@ export function computeMoveDamage(attacker: CalcPokemon, defender: CalcPokemon, 
     let koChanceMove: CalcMove;
     if (hitCounts) {
       const [minHits, maxHits, centralHits] = hitCounts;
-      min = calculate(calcGen, attacker, defender, new CalcMove(calcGen, moveName, { hits: minHits } as any), field).range()[0];
-      max = calculate(calcGen, attacker, defender, new CalcMove(calcGen, moveName, { hits: maxHits } as any), field).range()[1];
-      koChanceMove = new CalcMove(calcGen, moveName, { hits: centralHits } as any);
+      min = calculate(calcGen, attacker, defender, new CalcMove(calcGen, moveName, { hits: minHits, overrides: bpOverride } as any), field).range()[0];
+      max = calculate(calcGen, attacker, defender, new CalcMove(calcGen, moveName, { hits: maxHits, overrides: bpOverride } as any), field).range()[1];
+      koChanceMove = new CalcMove(calcGen, moveName, { hits: centralHits, overrides: bpOverride } as any);
     } else {
-      const move = new CalcMove(calcGen, moveName);
+      const move = new CalcMove(calcGen, moveName, { overrides: bpOverride } as any);
       if (move.category === 'Status' || move.bp === 0) return undefined;
       [min, max] = calculate(calcGen, attacker, defender, move, field).range();
       koChanceMove = move;

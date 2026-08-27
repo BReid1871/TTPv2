@@ -143,6 +143,24 @@ body {
   margin-left: 6px;
 }
 
+.charge-chip {
+  display: inline-block;
+  font-size: 10px;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel-alt);
+  color: var(--accent);
+  margin-left: 6px;
+}
+
+.charge-notice {
+  display: block;
+  font-size: 11px;
+  color: var(--accent);
+  font-style: italic;
+}
+
 table.moves { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
 table.moves th { text-align: left; color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; padding: 4px 6px; }
 table.moves td { padding: 5px 6px; border-top: 1px solid var(--border); }
