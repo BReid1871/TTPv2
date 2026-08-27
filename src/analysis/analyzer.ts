@@ -1,12 +1,15 @@
 import type { Pokemon as ClientPokemon, Side as ClientSide } from '@pkmn/client';
 import type { Pokemon as CalcPokemon } from '@smogon/calc';
-import type { ID } from '@pkmn/data';
+import { toID, type ID } from '@pkmn/data';
 import type { BattleSession } from '../battle/battleSession.js';
+import { getRequestStats } from '../battle/requestStats.js';
 import type { RandbatsRepository } from '../randbats/data.js';
 import { narrowSet, buildSetCandidates, type PokemonRevealState, type SetCandidate } from '../randbats/setTracker.js';
-import { buildKnownPokemon, buildCandidatePokemon, buildField, computeMoveDamage } from '../calc/damage.js';
+import { buildKnownPokemon, buildCandidatePokemon, buildField, computeMoveDamage, calcGen } from '../calc/damage.js';
 import { compareSpeed } from '../calc/speed.js';
 import type { AnalysisReport, MoveDamageReport, OpponentSetInfo, PokemonMatchup, SpeedReport, YourPokemonInfo } from './types.js';
+import type { DamageEvidence } from '../battle/damageEvidence.js';
+import { filterCandidatesByEvidence, distributionFrom, roleNamesFrom } from './itemInference.js';
 
 const MAX_CANDIDATE_SCENARIOS = 5;
 const MIN_MOVE_PROBABILITY_TO_SHOW = 0.08;
@@ -45,9 +48,42 @@ function toYourInfo(p: ClientPokemon, isActive: boolean): YourPokemonInfo {
   };
 }
 
-function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: boolean): OpponentSetInfo {
+/** narrowSet operates on @pkmn/client's internal IDs (e.g. 'headlongrush'); map
+ * back to display names (e.g. 'Headlong Rush') for anything shown to the user. */
+function displayMoveName(id: string): string {
+  return calcGen.moves.get(toID(id))?.name ?? id;
+}
+function displayAbilityName(id: string): string {
+  return calcGen.abilities.get(toID(id))?.name ?? id;
+}
+function displayItemName(id: string): string {
+  return calcGen.items.get(toID(id))?.name ?? id;
+}
+
+function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: boolean, evidence: DamageEvidence[]): OpponentSetInfo {
   const reveal = toRevealState(p);
   const narrowed = narrowSet(reveal, repo);
+
+  // Structural narrowing (ability/item/moves already revealed) comes from
+  // narrowSet above. On top of that, cross-check accumulated damage
+  // evidence against every remaining candidate and drop whichever ones
+  // couldn't have produced an observed hit -- e.g. a Choice Band-only
+  // amount of damage rules out every non-Choice-Band item candidate. Only
+  // applied when the field isn't already directly confirmed (a real reveal
+  // always wins over an inference).
+  let candidateRoles = narrowed.candidateRoleNames;
+  let ability = narrowed.ability;
+  let item = narrowed.item;
+  if (evidence.length > 0 && (!narrowed.ability.known || !narrowed.item.known)) {
+    const allCandidates = buildSetCandidates(reveal, repo, Infinity);
+    const survivors = filterCandidatesByEvidence(allCandidates, evidence);
+    if (survivors.length < allCandidates.length) {
+      candidateRoles = roleNamesFrom(survivors);
+      if (!narrowed.ability.known) ability = { known: undefined, possible: distributionFrom(survivors, (c) => displayAbilityName(c.ability)) };
+      if (!narrowed.item.known) item = { known: undefined, possible: distributionFrom(survivors, (c) => displayItemName(c.item)) };
+    }
+  }
+
   return {
     ident: p.ident,
     species: p.speciesForme,
@@ -57,11 +93,11 @@ function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: bo
     fainted: p.fainted,
     isActive,
     dataFound: narrowed.found,
-    candidateRoles: narrowed.candidateRoleNames,
-    ability: narrowed.ability,
-    item: narrowed.item,
+    candidateRoles,
+    ability: { ...ability, known: ability.known ? displayAbilityName(ability.known) : undefined },
+    item: { ...item, known: item.known ? displayItemName(item.known) : undefined },
     teraType: narrowed.teraType,
-    revealedMoves: narrowed.revealedMoves,
+    revealedMoves: narrowed.revealedMoves.map(displayMoveName),
     possibleRemainingMoves: narrowed.possibleRemainingMoves.filter((m) => m.probability >= MIN_MOVE_PROBABILITY_TO_SHOW),
   };
 }
@@ -75,8 +111,13 @@ function buildYourCalcPokemon(p: ClientPokemon, stats?: { atk: number; def: numb
   return buildKnownPokemon(p.speciesForme, {
     speciesForme: p.speciesForme,
     level: p.level,
-    ability: p.ability,
-    item: p.item,
+    // @smogon/calc's hasAbility()/hasItem() do exact-string matching against
+    // display names ('Life Orb'), not @pkmn/client's lowercase IDs
+    // ('lifeorb') -- passing the ID form silently disables every held-item
+    // and ability effect (Choice items, Life Orb, Assault Vest, Supreme
+    // Overlord, ...) for your own team's damage calc without ever erroring.
+    ability: p.ability ? displayAbilityName(p.ability) : p.ability,
+    item: p.item ? displayItemName(p.item) : p.item,
     status: p.status,
     teraType: p.terastallized,
     isTerastallized: !!p.terastallized,
@@ -107,9 +148,9 @@ interface CandidateScenario {
   calcPokemon: CalcPokemon;
 }
 
-function buildOpponentScenarios(p: ClientPokemon, repo: RandbatsRepository): CandidateScenario[] {
+function buildOpponentScenarios(p: ClientPokemon, repo: RandbatsRepository, evidence: DamageEvidence[]): CandidateScenario[] {
   const reveal = toRevealState(p);
-  const candidates = buildSetCandidates(reveal, repo, MAX_CANDIDATE_SCENARIOS);
+  const candidates = filterCandidatesByEvidence(buildSetCandidates(reveal, repo, MAX_CANDIDATE_SCENARIOS), evidence);
   if (candidates.length === 0) {
     // Unknown to randbats data (e.g. not a Random Battle format, or a
     // species missing from the set): fall back to a "bare" Pokemon using
@@ -132,6 +173,30 @@ function buildOpponentScenarios(p: ClientPokemon, repo: RandbatsRepository): Can
   }));
 }
 
+/** Many candidate scenarios (different ability/item combos) land on the exact
+ * same damage range -- e.g. an item that doesn't touch the relevant offense/
+ * defense stat at all -- so "most likely" has to sum probability across every
+ * scenario that produced a given (min, max) and pick the highest total,
+ * rather than just taking the single highest-probability scenario with ties
+ * broken by array order (which silently depends on how the upstream data
+ * happened to order otherwise-equivalent candidates). */
+function pickMostLikelyOutcome(
+  outcomes: Array<{ probability: number; minPercent: number; maxPercent: number; koChance?: string }>
+): { mostLikely?: number; koChance?: string } {
+  const grouped = new Map<string, { probability: number; minPercent: number; maxPercent: number; koChance?: string }>();
+  for (const o of outcomes) {
+    const key = `${o.minPercent}|${o.maxPercent}`;
+    const existing = grouped.get(key);
+    if (existing) existing.probability += o.probability;
+    else grouped.set(key, { ...o });
+  }
+  let best: { probability: number; minPercent: number; maxPercent: number; koChance?: string } | undefined;
+  for (const g of grouped.values()) {
+    if (!best || g.probability > best.probability) best = g;
+  }
+  return best ? { mostLikely: (best.minPercent + best.maxPercent) / 2, koChance: best.koChance } : {};
+}
+
 /** Damage from a fixed attacker into a set of candidate defender scenarios. */
 function movesVsCandidateDefenders(
   moves: Array<{ name: string; confirmed: boolean; probability?: number }>,
@@ -143,21 +208,16 @@ function movesVsCandidateDefenders(
   for (const move of moves) {
     let min = Infinity;
     let max = -Infinity;
-    let mostLikely: number | undefined;
-    let mostLikelyProb = -1;
-    let koChance: string | undefined;
+    const outcomes: Array<{ probability: number; minPercent: number; maxPercent: number; koChance?: string }> = [];
     for (const scenario of defenderScenarios) {
       const result = computeMoveDamage(attacker, scenario.calcPokemon, move.name, field);
       if (!result) continue;
       min = Math.min(min, result.minPercent);
       max = Math.max(max, result.maxPercent);
-      if (scenario.probability > mostLikelyProb) {
-        mostLikelyProb = scenario.probability;
-        mostLikely = (result.minPercent + result.maxPercent) / 2;
-        koChance = result.koChance;
-      }
+      outcomes.push({ probability: scenario.probability, minPercent: result.minPercent, maxPercent: result.maxPercent, koChance: result.koChance });
     }
     if (min === Infinity) continue; // status move or calc failure
+    const { mostLikely, koChance } = pickMostLikelyOutcome(outcomes);
     reports.push({
       name: move.name,
       minPercent: round1(min),
@@ -182,21 +242,16 @@ function movesFromCandidateAttackers(
   for (const move of moves) {
     let min = Infinity;
     let max = -Infinity;
-    let mostLikely: number | undefined;
-    let mostLikelyProb = -1;
-    let koChance: string | undefined;
+    const outcomes: Array<{ probability: number; minPercent: number; maxPercent: number; koChance?: string }> = [];
     for (const scenario of attackerScenarios) {
       const result = computeMoveDamage(scenario.calcPokemon, defender, move.name, field);
       if (!result) continue;
       min = Math.min(min, result.minPercent);
       max = Math.max(max, result.maxPercent);
-      if (scenario.probability > mostLikelyProb) {
-        mostLikelyProb = scenario.probability;
-        mostLikely = (result.minPercent + result.maxPercent) / 2;
-        koChance = result.koChance;
-      }
+      outcomes.push({ probability: scenario.probability, minPercent: result.minPercent, maxPercent: result.maxPercent, koChance: result.koChance });
     }
     if (min === Infinity) continue;
+    const { mostLikely, koChance } = pickMostLikelyOutcome(outcomes);
     reports.push({
       name: move.name,
       minPercent: round1(min),
@@ -227,18 +282,28 @@ function buildSpeedReport(
 
   let opponentMin = Infinity;
   let opponentMax = -Infinity;
-  let mostLikely = 0;
-  let mostLikelyProb = -1;
   let yourSpeed = 0;
+  // Many candidate scenarios land on the exact same integer speed (most
+  // items/abilities don't affect Speed at all), so "most likely" has to sum
+  // probability across every scenario that produces a given speed and pick
+  // the highest total -- taking the single highest-probability scenario
+  // (with ties broken by array order) would silently depend on how the
+  // upstream data happened to order otherwise-equivalent candidates.
+  const speedProbability = new Map<number, number>();
 
   for (const scenario of opponentScenarios) {
     const cmp = compareSpeed(yourCalcPokemon, yourSide, scenario.calcPokemon, opponentSide, field, trickRoomActive);
     yourSpeed = cmp.yourSpeed;
     opponentMin = Math.min(opponentMin, cmp.opponentSpeed);
     opponentMax = Math.max(opponentMax, cmp.opponentSpeed);
-    if (scenario.probability > mostLikelyProb) {
-      mostLikelyProb = scenario.probability;
-      mostLikely = cmp.opponentSpeed;
+    speedProbability.set(cmp.opponentSpeed, (speedProbability.get(cmp.opponentSpeed) ?? 0) + scenario.probability);
+  }
+  let mostLikely = 0;
+  let mostLikelyProb = -1;
+  for (const [speed, probability] of speedProbability) {
+    if (probability > mostLikelyProb) {
+      mostLikelyProb = probability;
+      mostLikely = speed;
     }
   }
   if (opponentMin === Infinity) {
@@ -273,10 +338,11 @@ function buildMatchup(
 ): PokemonMatchup {
   const field = buildField(session.battle, yourSideId);
   const yourCalc = buildYourCalcPokemon(yourPokemon, requestStats.get(yourPokemon));
-  const opponentScenarios = buildOpponentScenarios(opponentPokemon, repo);
+  const evidence = session.damageEvidence.getEvidence(opponentPokemon.speciesForme);
+  const opponentScenarios = buildOpponentScenarios(opponentPokemon, repo, evidence);
 
   const yourMoves = yourPokemon.moveSlots.map((m) => ({ name: m.name, confirmed: true }));
-  const opponentInfo = toOpponentInfo(opponentPokemon, repo, isOpponentActive);
+  const opponentInfo = toOpponentInfo(opponentPokemon, repo, isOpponentActive, evidence);
   const opponentMoveList = [
     ...opponentInfo.revealedMoves.map((name) => ({ name, confirmed: true })),
     ...opponentInfo.possibleRemainingMoves.map((m) => ({ name: m.name, confirmed: false, probability: m.probability })),
@@ -317,14 +383,7 @@ export function analyzeBattle(session: BattleSession, repo: RandbatsRepository):
     return { ...base, waitingReason: 'Waiting for both sides to have an active Pokemon...' };
   }
 
-  const requestStats = new Map<ClientPokemon, { atk: number; def: number; spa: number; spd: number; spe: number }>();
-  const request = session.battle.request;
-  if (request?.side) {
-    request.side.pokemon.forEach((rp, i) => {
-      const clientMon = mySideObj.team[i];
-      if (clientMon && rp.stats) requestStats.set(clientMon, rp.stats as any);
-    });
-  }
+  const requestStats = getRequestStats(session.battle, mySideObj);
 
   const active = buildMatchup(myActive, foeActive, session, mySideId, repo, requestStats, true, true);
 
@@ -334,7 +393,7 @@ export function analyzeBattle(session: BattleSession, repo: RandbatsRepository):
 
   const opponentRevealedBench = foeSideObj.team
     .filter((p) => p !== foeActive && !p.fainted)
-    .map((p) => toOpponentInfo(p, repo, false));
+    .map((p) => toOpponentInfo(p, repo, false, session.damageEvidence.getEvidence(p.speciesForme)));
 
   return {
     ...base,

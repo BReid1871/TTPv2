@@ -1,6 +1,6 @@
 import { Generations, Pokemon as CalcPokemon, Move as CalcMove, Field as CalcField, Side as CalcSide, calculate } from '@smogon/calc';
 import type { Battle, Side as ClientSide } from '@pkmn/client';
-import type { StatsTable } from '../randbats/setTracker.js';
+import { DEFAULT_EVS, DEFAULT_IVS, type StatsTable } from '../randbats/setTracker.js';
 
 export const calcGen = Generations.get(9);
 
@@ -56,6 +56,16 @@ export function buildKnownPokemon(name: string, set: KnownSetInput): CalcPokemon
     teraType: set.isTerastallized ? (set.teraType as any) : undefined,
     curHP: Math.max(1, Math.round(set.rawStats.hp * set.currentHpFraction)),
     boostedStat: set.ability && isParadoxAbility(set.ability) ? 'auto' : undefined,
+    // rawStats/stats below are overridden with the real |request| numbers
+    // regardless, but @smogon/calc reads pokemon.evs directly for at least
+    // one damage-relevant purpose beyond deriving rawStats (confirmed: an
+    // otherwise-identical Pokemon differs measurably in computed damage
+    // with evs left at the library's zero default vs set here) -- Random
+    // Battle sets overwhelmingly use this flat spread (see setTracker.ts),
+    // and we don't have the real per-stat EVs from |request|, so use it as
+    // the closest available approximation rather than the wrong default of 0.
+    evs: DEFAULT_EVS as any,
+    ivs: DEFAULT_IVS as any,
   });
   p.rawStats = { ...set.rawStats } as any;
   p.stats = { ...set.rawStats } as any;
@@ -120,12 +130,65 @@ function buildSideConditions(side: ClientSide): CalcSide {
   });
 }
 
+export interface PlainSideConditions {
+  spikes: number;
+  isSR: boolean;
+  isReflect: boolean;
+  isLightScreen: boolean;
+  isAuroraVeil: boolean;
+  isTailwind: boolean;
+}
+
+export interface PlainFieldSnapshot {
+  weather?: string;
+  terrain?: string;
+  isGravity: boolean;
+  mySideConditions: PlainSideConditions;
+  opponentSideConditions: PlainSideConditions;
+}
+
+function sideConditionsFromSnapshot(s: PlainSideConditions): CalcSide {
+  return new CalcSide({
+    spikes: s.spikes,
+    isSR: s.isSR,
+    isReflect: s.isReflect,
+    isLightScreen: s.isLightScreen,
+    isAuroraVeil: s.isAuroraVeil,
+    isTailwind: s.isTailwind,
+    isSeeded: false,
+    isFriendGuard: false,
+    isBattery: false,
+    isPowerSpot: false,
+    isSteelySpirit: false,
+    isHelpingHand: false,
+    isFlowerGift: false,
+    isProtected: false,
+    isForesight: false,
+    isSaltCured: false,
+  });
+}
+
+/** Same as buildField, but reconstructed from a plain snapshot (see
+ * src/battle/damageEvidence.ts) instead of a live Battle -- used to replay
+ * historical evidence exactly as the field looked at the time it happened. */
+export function buildFieldFromSnapshot(snapshot: PlainFieldSnapshot, attackerIsMe: boolean): CalcField {
+  const attackerSide = attackerIsMe ? snapshot.mySideConditions : snapshot.opponentSideConditions;
+  const defenderSide = attackerIsMe ? snapshot.opponentSideConditions : snapshot.mySideConditions;
+  return new CalcField({
+    gameType: 'Singles',
+    weather: snapshot.weather as any,
+    terrain: snapshot.terrain as any,
+    isGravity: snapshot.isGravity,
+    attackerSide: sideConditionsFromSnapshot(attackerSide),
+    defenderSide: sideConditionsFromSnapshot(defenderSide),
+  });
+}
+
 export interface MoveDamageResult {
   moveName: string;
   minPercent: number;
   maxPercent: number;
   koChance?: string;
-  description: string;
 }
 
 /** Computes min/max damage as a percentage of the defender's max HP. */
@@ -138,6 +201,10 @@ export function computeMoveDamage(attacker: CalcPokemon, defender: CalcPokemon, 
     const maxHp = defender.maxHP();
     const minPercent = Math.min(100, (min / maxHp) * 100);
     const maxPercent = Math.min(100, (max / maxHp) * 100);
+    // result.kochance() (and .desc(), which we don't use) throws for a
+    // guaranteed-0-damage hit (e.g. a full type immunity) instead of
+    // reporting "won't KO" -- that's a real outcome, not a calc error, so
+    // it must not fall through to the outer catch and drop the whole move.
     let koChance: string | undefined;
     try {
       koChance = result.kochance().text;
@@ -149,7 +216,6 @@ export function computeMoveDamage(attacker: CalcPokemon, defender: CalcPokemon, 
       minPercent,
       maxPercent,
       koChance,
-      description: result.desc(),
     };
   } catch (err) {
     return undefined;
