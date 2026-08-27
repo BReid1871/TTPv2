@@ -2,7 +2,7 @@ import { Generations, toID } from '@pkmn/data';
 import { Dex } from '@pkmn/dex';
 import type { Side as ClientSide } from '@pkmn/client';
 import type { BattleSession } from '../battle/battleSession.js';
-import { getRequestStats } from '../battle/requestStats.js';
+import { getRequestInfo } from '../battle/requestStats.js';
 import type { RandbatsRepository } from '../randbats/data.js';
 import { buildField } from '../calc/damage.js';
 import { buildYourCalcPokemon, buildOpponentScenarios, buildMatchup } from '../analysis/analyzer.js';
@@ -180,9 +180,9 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
       const delta = selfBoostsFor(move.name);
       if (!delta) continue;
       if (!boostReconstruction) {
-        const requestStats = getRequestStats(session.battle, mySideObj);
+        const requestInfo = getRequestInfo(session.battle, mySideObj);
         boostReconstruction = {
-          yourCalc: buildYourCalcPokemon(myActive, requestStats.get(myActive)),
+          yourCalc: buildYourCalcPokemon(myActive, requestInfo.get(myActive)),
           opponentScenarios: buildOpponentScenarios(foeActive, repo, session.damageEvidence.getEvidence(foeActive.speciesForme)),
           field: buildField(session.battle, mySideId),
         };
@@ -274,10 +274,10 @@ export function recommendForcedSwitch(session: BattleSession, repo: RandbatsRepo
   const foeActive = foeSideObj.active[0];
   if (!foeActive || foeActive.fainted) return undefined;
 
-  const requestStats = getRequestStats(session.battle, mySideObj);
+  const requestInfo = getRequestInfo(session.battle, mySideObj);
   const bench = mySideObj.team
     .filter((p) => !p.fainted)
-    .map((p) => buildMatchup(p, foeActive, session, mySideId, repo, requestStats, false, true));
+    .map((p) => buildMatchup(p, foeActive, session, mySideId, repo, requestInfo, false, true));
   if (bench.length === 0) return undefined;
 
   const switchCandidates = buildSwitchCandidates(bench, mySideObj, bench[0].opponent.hpPercent);

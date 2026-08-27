@@ -2,7 +2,7 @@ import type { Pokemon as ClientPokemon, Side as ClientSide } from '@pkmn/client'
 import type { Pokemon as CalcPokemon } from '@smogon/calc';
 import { toID, type ID } from '@pkmn/data';
 import type { BattleSession } from '../battle/battleSession.js';
-import { getRequestStats } from '../battle/requestStats.js';
+import { getRequestInfo, type RequestPokemonInfo } from '../battle/requestStats.js';
 import type { RandbatsRepository } from '../randbats/data.js';
 import { narrowSet, buildSetCandidates, type PokemonRevealState, type SetCandidate } from '../randbats/setTracker.js';
 import { buildKnownPokemon, buildCandidatePokemon, buildField, computeMoveDamage, calcGen } from '../calc/damage.js';
@@ -38,11 +38,21 @@ function hpFraction(p: ClientPokemon): number {
   return Math.max(0, Math.min(1, p.hp / p.maxhp));
 }
 
-function toYourInfo(p: ClientPokemon, isActive: boolean, chargingMove?: string): YourPokemonInfo {
+/** Prefer the authoritative |request| HP for one of *your* Pokemon over
+ * ClientPokemon's own hp/maxhp -- see getRequestInfo's doc comment for why
+ * those lag by one request for a bench Pokemon that hasn't been sent out
+ * yet (reads as 0/0, i.e. hpFraction's "unknown -> assume full" fallback,
+ * rather than the real value). */
+function yourHpFraction(p: ClientPokemon, info: RequestPokemonInfo | undefined): number {
+  if (info?.maxhp) return Math.max(0, Math.min(1, info.hp / info.maxhp));
+  return hpFraction(p);
+}
+
+function toYourInfo(p: ClientPokemon, isActive: boolean, chargingMove: string | undefined, info: RequestPokemonInfo | undefined): YourPokemonInfo {
   return {
     ident: p.ident,
     species: p.speciesForme,
-    hpPercent: Math.round(hpFraction(p) * 100),
+    hpPercent: Math.round(yourHpFraction(p, info) * 100),
     status: p.status,
     fainted: p.fainted,
     isActive,
@@ -106,11 +116,14 @@ function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: bo
 }
 
 /** Build the exact calc.Pokemon for one of *your* team members, using the
- * server-authoritative |request| stats rather than any estimate. */
-export function buildYourCalcPokemon(p: ClientPokemon, stats?: { atk: number; def: number; spa: number; spd: number; spe: number }): CalcPokemon {
-  const rawStats = stats
-    ? { hp: p.maxhp || 1, ...stats }
-    : { hp: p.maxhp || 1, atk: 1, def: 1, spa: 1, spd: 1, spe: 1 };
+ * server-authoritative |request| stats/HP rather than any estimate -- see
+ * getRequestInfo's doc comment for why request-derived HP (not
+ * ClientPokemon's own maxhp) matters here specifically. */
+export function buildYourCalcPokemon(p: ClientPokemon, info?: RequestPokemonInfo): CalcPokemon {
+  const maxHp = info?.maxhp || p.maxhp || 1;
+  const rawStats = info?.stats
+    ? { hp: maxHp, ...info.stats }
+    : { hp: maxHp, atk: 1, def: 1, spa: 1, spd: 1, spe: 1 };
   return buildKnownPokemon(p.speciesForme, {
     speciesForme: p.speciesForme,
     level: p.level,
@@ -126,7 +139,7 @@ export function buildYourCalcPokemon(p: ClientPokemon, stats?: { atk: number; de
     isTerastallized: !!p.terastallized,
     rawStats,
     boosts: pickBoosts(p),
-    currentHpFraction: hpFraction(p),
+    currentHpFraction: yourHpFraction(p, info),
   });
 }
 
@@ -376,13 +389,14 @@ export function buildMatchup(
   session: BattleSession,
   yourSideId: 'p1' | 'p2',
   repo: RandbatsRepository,
-  requestStats: Map<ClientPokemon, { atk: number; def: number; spa: number; spd: number; spe: number }>,
+  requestInfo: Map<ClientPokemon, RequestPokemonInfo>,
   isYoursActive: boolean,
   isOpponentActive: boolean
 ): PokemonMatchup {
   const field = buildField(session.battle, yourSideId);
   const weather = session.battle.field.weather || undefined;
-  const yourCalc = buildYourCalcPokemon(yourPokemon, requestStats.get(yourPokemon));
+  const yourInfo = requestInfo.get(yourPokemon);
+  const yourCalc = buildYourCalcPokemon(yourPokemon, yourInfo);
   const evidence = session.damageEvidence.getEvidence(opponentPokemon.speciesForme);
   const opponentScenarios = buildOpponentScenarios(opponentPokemon, repo, evidence);
 
@@ -392,7 +406,13 @@ export function buildMatchup(
   // only ever a probability distribution until revealed).
   const yourItem: AttackerItemInfo = { known: yourPokemon.item ? displayItemName(yourPokemon.item) : 'None' };
 
-  const yourMoves = yourPokemon.moveSlots.map((m) => ({ name: m.name, confirmed: true }));
+  // Prefer the |request|-derived moveset (yourInfo.moves) over
+  // ClientPokemon.moveSlots -- see getRequestInfo's doc comment for why
+  // moveSlots alone is unreliable for a bench Pokemon that hasn't been sent
+  // out yet. Falls back to moveSlots only if no request info is available
+  // at all (shouldn't normally happen once a battle has an active Pokemon).
+  const yourMoveNames = yourInfo?.moves.length ? yourInfo.moves : yourPokemon.moveSlots.map((m) => m.name);
+  const yourMoves = yourMoveNames.map((name) => ({ name, confirmed: true }));
   const opponentInfo = toOpponentInfo(opponentPokemon, repo, isOpponentActive, evidence, opponentChargingMove);
   const opponentMoveList = [
     ...opponentInfo.revealedMoves.map((name) => ({ name, confirmed: true })),
@@ -400,7 +420,7 @@ export function buildMatchup(
   ];
 
   return {
-    yours: toYourInfo(yourPokemon, isYoursActive, yourChargingMove),
+    yours: toYourInfo(yourPokemon, isYoursActive, yourChargingMove, yourInfo),
     opponent: opponentInfo,
     yourMovesVsOpponent: movesVsCandidateDefenders(yourMoves, yourCalc, opponentScenarios, field, weather, yourItem, opponentChargingMove),
     opponentMovesVsYou: movesFromCandidateAttackers(opponentMoveList, opponentScenarios, yourCalc, field, weather, opponentInfo.item, yourChargingMove),
@@ -434,13 +454,13 @@ export function analyzeBattle(session: BattleSession, repo: RandbatsRepository):
     return { ...base, waitingReason: 'Waiting for both sides to have an active Pokemon...' };
   }
 
-  const requestStats = getRequestStats(session.battle, mySideObj);
+  const requestInfo = getRequestInfo(session.battle, mySideObj);
 
-  const active = buildMatchup(myActive, foeActive, session, mySideId, repo, requestStats, true, true);
+  const active = buildMatchup(myActive, foeActive, session, mySideId, repo, requestInfo, true, true);
 
   const bench = mySideObj.team
     .filter((p) => p !== myActive && !p.fainted)
-    .map((p) => buildMatchup(p, foeActive, session, mySideId, repo, requestStats, false, true));
+    .map((p) => buildMatchup(p, foeActive, session, mySideId, repo, requestInfo, false, true));
 
   const opponentRevealedBench = foeSideObj.team
     .filter((p) => p !== foeActive && !p.fainted)
