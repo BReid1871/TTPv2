@@ -56,9 +56,10 @@ demoReports.set('battle-gen9randombattle-1', {
       { name: 'Kowtow Cleave', minPercent: 10.9, maxPercent: 13.2, mostLikelyPercent: 12, koChance: 'possible 8HKO', confirmed: true },
       { name: 'Sucker Punch', minPercent: 8.9, maxPercent: 10.9, mostLikelyPercent: 9.9, koChance: undefined, confirmed: true },
     ],
-    // Close Combat is unconfirmed but devastating: Fighting is x2 super
-    // effective on Kingambit's Steel typing, so it's a guaranteed OHKO, not
-    // the "possible 2HKO" an earlier draft of this sample data claimed.
+    // Close Combat is unconfirmed but devastating: Fighting is super
+    // effective against both of Kingambit's types (Dark and Steel), for 4x
+    // combined, plus Great Tusk's own Fighting STAB -- a guaranteed OHKO,
+    // not the "possible 2HKO" an earlier draft of this sample data claimed.
     opponentMovesVsYou: [
       { name: 'Close Combat', minPercent: 100, maxPercent: 100, mostLikelyPercent: 100, koChance: 'guaranteed OHKO', confirmed: false, probability: 0.4 },
       { name: 'Headlong Rush', minPercent: 80.7, maxPercent: 100, mostLikelyPercent: 88.5, koChance: 'guaranteed 2HKO after Leftovers recovery', confirmed: true },
@@ -114,12 +115,14 @@ demoReports.set('battle-gen9randombattle-1', {
       ],
       // Dragapult is Dragon/Ghost, so Great Tusk's Close Combat (Fighting) and
       // Rapid Spin (Normal) both whiff completely — Ghost typing is immune to
-      // both — and the analyzer correctly drops them from the table entirely.
+      // both — and correctly show up as guaranteed 0%.
       opponentMovesVsYou: [
         { name: 'Knock Off', minPercent: 62.6, maxPercent: 100, mostLikelyPercent: 68.3, koChance: 'guaranteed 2HKO', confirmed: false, probability: 0.4 },
         { name: 'Headlong Rush', minPercent: 58.4, maxPercent: 100, mostLikelyPercent: 63.5, koChance: 'guaranteed 2HKO', confirmed: true },
         { name: 'Ice Spinner', minPercent: 51.9, maxPercent: 91.6, mostLikelyPercent: 56.5, koChance: 'guaranteed 2HKO', confirmed: false, probability: 0.4 },
         { name: 'Stone Edge', minPercent: 32.4, maxPercent: 56.9, mostLikelyPercent: 35.3, koChance: '97.9% chance to 3HKO', confirmed: false, probability: 0.4 },
+        { name: 'Rapid Spin', minPercent: 0, maxPercent: 0, mostLikelyPercent: 0, koChance: undefined, confirmed: true },
+        { name: 'Close Combat', minPercent: 0, maxPercent: 0, mostLikelyPercent: 0, koChance: undefined, confirmed: false, probability: 0.4 },
       ],
       speed: {
         yourSpeed: 263,
