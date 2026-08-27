@@ -370,7 +370,7 @@ function buildSpeedReport(
   };
 }
 
-function buildMatchup(
+export function buildMatchup(
   yourPokemon: ClientPokemon,
   opponentPokemon: ClientPokemon,
   session: BattleSession,

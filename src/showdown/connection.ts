@@ -63,6 +63,16 @@ export class ShowdownConnection extends EventEmitter {
     this.send(`|/leave ${roomid}`);
   }
 
+  /** Queues for a new battle in the given format (automated mode only). */
+  search(format: string): void {
+    this.send(`|/search ${format}`);
+  }
+
+  /** Sends a `/choose` decision for a specific battle room (automated mode only). */
+  choose(roomid: string, choice: string): void {
+    this.send(`${roomid}|/choose ${choice}`);
+  }
+
   private scheduleReconnect(): void {
     const delay = Math.min(30_000, 1000 * 2 ** this.reconnectAttempt);
     this.reconnectAttempt++;
