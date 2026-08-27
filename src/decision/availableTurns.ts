@@ -59,18 +59,19 @@ export function proposedOpponentTurns(
   return Math.ceil(remaining / futureRatePercent);
 }
 
-/** isFaster ? tie goes to me : I need to strictly beat them.
+/** I win the race if the opponent's clock (opponentProposedAvailableTurns --
+ * how many more turns until THEY'RE finished) runs out at or before mine
+ * (myAvailableTurns -- how many more of their worst-case hits I can take).
+ * isFaster ? tie goes to me (I land the deciding hit first) : I need to
+ * strictly beat them (a tie means they get the last hit in first).
  *
- * Special case at myAvailableTurns <= 0: this means their worst-case hit
- * could knock me out on its very next turn, which the plain turn-count
- * comparison doesn't actually capture -- e.g. myTurns=0 vs theirTurns=2
- * would read as "favorable" under a naive `0 <= 2`/`0 < 2` check even
- * though I'm one hit from fainting and it takes two more of my hits to
- * finish them. Zero (or negative) available turns is only genuinely
- * favorable if I'm faster AND this same action already finishes them off
- * (opponentProposedAvailableTurns <= 0) -- they never get the retaliation
- * that would otherwise kill me. */
+ * NOTE: this was previously written the other way around
+ * (myAvailableTurns <= opponentProposedAvailableTurns), which is backwards
+ * -- confirmed in production it was marking a clean, faster OHKO from a
+ * healthy attacker as *unfavorable* (a healthy attacker's myAvailableTurns
+ * is essentially never <= an opponent already at 0 turns remaining), which
+ * silently excluded it from the "favorable stay-and-act" tier every single
+ * turn no matter how many times it was still the obviously correct play. */
 export function isFavorable(myAvailableTurns: number, opponentProposedAvailableTurns: number, isFaster: boolean): boolean {
-  if (myAvailableTurns <= 0) return isFaster && opponentProposedAvailableTurns <= 0;
-  return isFaster ? myAvailableTurns <= opponentProposedAvailableTurns : myAvailableTurns < opponentProposedAvailableTurns;
+  return isFaster ? opponentProposedAvailableTurns <= myAvailableTurns : opponentProposedAvailableTurns < myAvailableTurns;
 }
