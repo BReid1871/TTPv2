@@ -125,7 +125,6 @@ export interface MoveDamageResult {
   minPercent: number;
   maxPercent: number;
   koChance?: string;
-  description: string;
 }
 
 /** Computes min/max damage as a percentage of the defender's max HP. */
@@ -138,6 +137,10 @@ export function computeMoveDamage(attacker: CalcPokemon, defender: CalcPokemon, 
     const maxHp = defender.maxHP();
     const minPercent = Math.min(100, (min / maxHp) * 100);
     const maxPercent = Math.min(100, (max / maxHp) * 100);
+    // result.kochance() (and .desc(), which we don't use) throws for a
+    // guaranteed-0-damage hit (e.g. a full type immunity) instead of
+    // reporting "won't KO" -- that's a real outcome, not a calc error, so
+    // it must not fall through to the outer catch and drop the whole move.
     let koChance: string | undefined;
     try {
       koChance = result.kochance().text;
@@ -149,7 +152,6 @@ export function computeMoveDamage(attacker: CalcPokemon, defender: CalcPokemon, 
       minPercent,
       maxPercent,
       koChance,
-      description: result.desc(),
     };
   } catch (err) {
     return undefined;
