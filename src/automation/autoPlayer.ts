@@ -37,8 +37,11 @@ export class AutoPlayer {
     private readonly manager: BattleManager,
     private readonly repo: RandbatsRepository
   ) {
-    manager.on('battle-start', () => {
+    manager.on('battle-start', (session: BattleSession) => {
       this.searching = false;
+      // Without this an AFK/stalling opponent can leave the battle hanging
+      // forever -- start the timer on entry so inactivity auto-forfeits.
+      this.conn.timerOn(session.roomid);
     });
     manager.on('battle-end', (session: BattleSession) => {
       this.actedOn.delete(session.roomid);
