@@ -73,6 +73,12 @@ export class ShowdownConnection extends EventEmitter {
     this.send(`${roomid}|/choose ${choice}`);
   }
 
+  /** Turns on the battle timer for a room (automated mode only) -- without
+   * this an AFK/stalling opponent can leave the battle hanging forever. */
+  timerOn(roomid: string): void {
+    this.send(`${roomid}|/timer on`);
+  }
+
   private scheduleReconnect(): void {
     const delay = Math.min(30_000, 1000 * 2 ** this.reconnectAttempt);
     this.reconnectAttempt++;
