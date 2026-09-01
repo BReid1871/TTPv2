@@ -1,6 +1,6 @@
 import { Generations, toID } from '@pkmn/data';
 import { Dex } from '@pkmn/dex';
-import type { Side as ClientSide } from '@pkmn/client';
+import type { Side as ClientSide, Pokemon as ClientPokemon } from '@pkmn/client';
 import type { BattleSession } from '../battle/battleSession.js';
 import { getRequestInfo } from '../battle/requestStats.js';
 import type { RandbatsRepository } from '../randbats/data.js';
@@ -75,15 +75,29 @@ function isUtilityMoveAlreadyActive(
   return false;
 }
 
-/** Flat entry-hazard chip estimate for switching in -- deliberately a
- * simplification (doesn't account for the incoming species' type
- * effectiveness against Stealth Rock, or Flying/Levitate immunity to
- * Spikes/Toxic Spikes); good enough to stop a switch candidate's HP from
- * being silently overstated. */
-function estimateEntryHazardPercent(sideConditions: Record<string, { level?: number } | undefined>): number {
+const rockType = dataGen.types.get('Rock');
+const SPIKES_PERCENT_BY_LEVEL = [0, 12.5, 100 / 6, 25]; // 1/8, 1/6, 1/4 max HP
+
+/** Entry-hazard chip estimate for switching `incoming` in, matching
+ * @smogon/calc's own getHazards formula: Stealth Rock scales with the
+ * incoming Pokemon's type effectiveness against Rock (0x-4x), Spikes is
+ * flat per layer but skipped entirely for Flying types / Levitate / Magic
+ * Guard, and Heavy-Duty Boots blocks both. */
+function estimateEntryHazardPercent(sideConditions: Record<string, { level?: number } | undefined>, incoming: ClientPokemon): number {
+  if (incoming.item === 'heavydutyboots') return 0;
+  const immune = incoming.ability === 'magicguard' || incoming.ability === 'mountaineer';
   let percent = 0;
-  if (sideConditions['stealthrock']) percent += 12.5;
-  percent += (sideConditions['spikes']?.level ?? 0) * 12.5;
+
+  if (sideConditions['stealthrock'] && !immune && rockType) {
+    const effectiveness = incoming.types.reduce((mult, t) => mult * (rockType.effectiveness[t] ?? 1), 1);
+    percent += effectiveness * 12.5;
+  }
+
+  const spikesLevel = sideConditions['spikes']?.level ?? 0;
+  if (spikesLevel > 0 && !immune && incoming.ability !== 'levitate' && incoming.item !== 'airballoon' && !incoming.types.includes('Flying')) {
+    percent += SPIKES_PERCENT_BY_LEVEL[spikesLevel] ?? 0;
+  }
+
   return percent;
 }
 
@@ -119,7 +133,8 @@ function expectedDamagePercent(m: MoveDamageReport): number {
 export function buildSwitchCandidates(bench: PokemonMatchup[], mySideObj: ClientSide, opponentHpPercent: number, expectedFirstHitPercent?: number): ActionEvaluation[] {
   return bench.map((b) => {
     const theirWorstCaseVsBench = Math.max(0, ...b.opponentMovesVsYou.map((m) => m.maxPercent));
-    const hazardChip = estimateEntryHazardPercent(mySideObj.sideConditions as any);
+    const incoming = mySideObj.team.find((p) => p.ident === b.yours.ident);
+    const hazardChip = incoming ? estimateEntryHazardPercent(mySideObj.sideConditions as any, incoming) : 0;
     const hpAfterHazards = Math.max(0, b.yours.hpPercent - hazardChip);
     const myTurns = availableTurnsAfterSwitch(hpAfterHazards, expectedFirstHitPercent ?? theirWorstCaseVsBench, theirWorstCaseVsBench);
     const bestSwitchInAttack = Math.max(0, ...b.yourMovesVsOpponent.filter((m) => m.confirmed).map((m) => m.minPercent));
