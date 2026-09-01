@@ -12,6 +12,9 @@ export interface ActionEvaluation {
   favorable: boolean;
   /** true for boost-kind actions -- tie-break preference toward setup on an otherwise-equal race */
   persistentBoost: boolean;
+  /** move accuracy, 0-100 (100 for always-hit moves and non-move actions like switching) --
+   * tie-break toward the more reliable move when two attacks land on the same N-hit-KO */
+  accuracy: number;
 }
 
 export interface RecommendedAction {

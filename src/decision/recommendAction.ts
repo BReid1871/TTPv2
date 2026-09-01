@@ -87,6 +87,13 @@ function estimateEntryHazardPercent(sideConditions: Record<string, { level?: num
   return percent;
 }
 
+/** Move accuracy as a 0-100 number -- true (always hits, e.g. Aerial Ace) and
+ * status moves with no accuracy field both normalize to 100. */
+function moveAccuracy(moveName: string): number {
+  const acc = dataGen.moves.get(toID(moveName))?.accuracy;
+  return acc === true || acc === undefined ? 100 : acc;
+}
+
 /** A single move's realistic expected damage roll -- the same fallback the
  * dashboard's damage bars already use (mostLikelyPercent when known, else
  * the middle of the min/max range) -- as opposed to maxPercent, which is
@@ -124,14 +131,21 @@ export function buildSwitchCandidates(bench: PokemonMatchup[], mySideObj: Client
       opponentProposedAvailableTurns: theirTurns,
       favorable: isFavorable(myTurns, theirTurns, b.speed.youAreFasterMostLikely),
       persistentBoost: false,
+      accuracy: 100, // switching itself always succeeds
     };
   });
 }
 
+/** Among candidates tied on turns-to-KO, prefer persistent setup, then the
+ * more accurate move -- e.g. two attacks that both 2HKO should favor the
+ * one less likely to miss. */
 export function pickBestByTurnsThenBoost(list: ActionEvaluation[]): ActionEvaluation {
   return list.reduce((best, c) => {
     if (c.opponentProposedAvailableTurns < best.opponentProposedAvailableTurns) return c;
-    if (c.opponentProposedAvailableTurns === best.opponentProposedAvailableTurns && c.persistentBoost && !best.persistentBoost) return c;
+    if (c.opponentProposedAvailableTurns === best.opponentProposedAvailableTurns) {
+      if (c.persistentBoost && !best.persistentBoost) return c;
+      if (c.persistentBoost === best.persistentBoost && c.accuracy > best.accuracy) return c;
+    }
     return best;
   });
 }
@@ -184,6 +198,7 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
       opponentProposedAvailableTurns: theirTurns,
       favorable: isFavorable(myCurrentAvailableTurns, theirTurns, isFaster),
       persistentBoost: false,
+      accuracy: moveAccuracy(move.name),
     });
   }
 
@@ -217,6 +232,7 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
         opponentProposedAvailableTurns: theirTurns,
         favorable: isFavorable(myCurrentAvailableTurns, theirTurns, isFaster),
         persistentBoost: true,
+        accuracy: moveAccuracy(move.name),
       });
     } else if (move.category === 'heal') {
       const healFraction = dataGen.moves.get(toID(move.name))?.heal;
@@ -231,6 +247,7 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
         opponentProposedAvailableTurns: theirTurns,
         favorable: isFavorable(myTurnsAfterHeal, theirTurns, isFaster),
         persistentBoost: false,
+        accuracy: moveAccuracy(move.name),
       });
     } else {
       // utility -- gated by slack, and by whether its effect is already active
@@ -244,6 +261,7 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
         opponentProposedAvailableTurns: theirTurns,
         favorable: true, // eligibility is the gate, not the race
         persistentBoost: false,
+        accuracy: moveAccuracy(move.name),
       });
     }
   }
