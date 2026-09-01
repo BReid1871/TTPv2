@@ -15,7 +15,7 @@ import { chargeNoticeFor, semiInvulnerabilityOutcome } from './chargeMoves.js';
 const MAX_CANDIDATE_SCENARIOS = 5;
 const MIN_MOVE_PROBABILITY_TO_SHOW = 0.08;
 
-function toRevealState(p: ClientPokemon): PokemonRevealState {
+function toRevealState(p: ClientPokemon, choiceItemRuledOut = false): PokemonRevealState {
   return {
     speciesForme: p.speciesForme,
     baseSpeciesName: p.baseSpecies.name,
@@ -25,6 +25,7 @@ function toRevealState(p: ClientPokemon): PokemonRevealState {
     lastItem: p.lastItem ?? '',
     moveIds: p.moveSlots.map((m) => m.id),
     teraType: p.terastallized,
+    choiceItemRuledOut,
   };
 }
 
@@ -72,8 +73,8 @@ function displayItemName(id: string): string {
   return calcGen.items.get(toID(id))?.name ?? id;
 }
 
-function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: boolean, evidence: DamageEvidence[], chargingMove?: string): OpponentSetInfo {
-  const reveal = toRevealState(p);
+function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: boolean, evidence: DamageEvidence[], choiceItemRuledOut = false, chargingMove?: string): OpponentSetInfo {
+  const reveal = toRevealState(p, choiceItemRuledOut);
   const narrowed = narrowSet(reveal, repo);
 
   // Structural narrowing (ability/item/moves already revealed) comes from
@@ -172,8 +173,8 @@ export interface CandidateScenario {
   calcPokemon: CalcPokemon;
 }
 
-export function buildOpponentScenarios(p: ClientPokemon, repo: RandbatsRepository, evidence: DamageEvidence[]): CandidateScenario[] {
-  const reveal = toRevealState(p);
+export function buildOpponentScenarios(p: ClientPokemon, repo: RandbatsRepository, evidence: DamageEvidence[], choiceItemRuledOut = false): CandidateScenario[] {
+  const reveal = toRevealState(p, choiceItemRuledOut);
   const candidates = filterCandidatesByEvidence(buildSetCandidates(reveal, repo, MAX_CANDIDATE_SCENARIOS), evidence);
   if (candidates.length === 0) {
     // Unknown to randbats data (e.g. not a Random Battle format, or a
@@ -333,7 +334,7 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
-function buildSpeedReport(
+export function buildSpeedReport(
   yourCalcPokemon: CalcPokemon,
   opponentScenarios: CandidateScenario[],
   session: BattleSession,
@@ -405,7 +406,8 @@ export function buildMatchup(
   const yourInfo = requestInfo.get(yourPokemon);
   const yourCalc = buildYourCalcPokemon(yourPokemon, yourInfo);
   const evidence = session.damageEvidence.getEvidence(opponentPokemon.speciesForme);
-  const opponentScenarios = buildOpponentScenarios(opponentPokemon, repo, evidence);
+  const opponentChoiceItemRuledOut = session.choiceLock.ruledOutChoiceItem(opponentPokemon.ident);
+  const opponentScenarios = buildOpponentScenarios(opponentPokemon, repo, evidence, opponentChoiceItemRuledOut);
 
   const yourChargingMove = session.chargeState.chargingMove(yourPokemon.ident);
   const opponentChargingMove = session.chargeState.chargingMove(opponentPokemon.ident);
@@ -420,7 +422,7 @@ export function buildMatchup(
   // at all (shouldn't normally happen once a battle has an active Pokemon).
   const yourMoveNames = yourInfo?.moves.length ? yourInfo.moves : yourPokemon.moveSlots.map((m) => m.name);
   const yourMoves = yourMoveNames.map((name) => ({ name, confirmed: true }));
-  const opponentInfo = toOpponentInfo(opponentPokemon, repo, isOpponentActive, evidence, opponentChargingMove);
+  const opponentInfo = toOpponentInfo(opponentPokemon, repo, isOpponentActive, evidence, opponentChoiceItemRuledOut, opponentChargingMove);
   const opponentMoveList = [
     ...opponentInfo.revealedMoves.map((name) => ({ name, confirmed: true })),
     ...opponentInfo.possibleRemainingMoves.map((m) => ({ name: m.name, confirmed: false, probability: m.probability })),
@@ -471,7 +473,7 @@ export function analyzeBattle(session: BattleSession, repo: RandbatsRepository):
 
   const opponentRevealedBench = foeSideObj.team
     .filter((p) => p !== foeActive && !p.fainted)
-    .map((p) => toOpponentInfo(p, repo, false, session.damageEvidence.getEvidence(p.speciesForme), session.chargeState.chargingMove(p.ident)));
+    .map((p) => toOpponentInfo(p, repo, false, session.damageEvidence.getEvidence(p.speciesForme), session.choiceLock.ruledOutChoiceItem(p.ident), session.chargeState.chargingMove(p.ident)));
 
   return {
     ...base,
