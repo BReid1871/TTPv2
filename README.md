@@ -48,6 +48,32 @@ spectator. It never sends any battle commands itself.
   their most probable candidate sets when a detail isn't confirmed yet.
 - `src/web/` — a tiny Express + `ws` server that pushes each new
   `AnalysisReport` to a live browser dashboard (`src/web/public/`).
+- `src/logging/battleLogger.ts` — records every finished battle to disk: the
+  raw protocol log plus a per-turn snapshot of what the recommendation
+  engine chose and every alternative it weighed. Served at `/logs` (see
+  below).
+
+## Battle history (`/logs`)
+
+Every battle (analysis or automated mode) gets its own folder under
+`BATTLE_LOG_DIR`, written when the battle ends:
+
+- `battle.log` — the raw Showdown protocol log, one line per event.
+- `recommendations.json` — one entry per turn: the chosen action and every
+  alternative the decision engine weighed (turns-to-win, accuracy, etc.).
+- `meta.json` — result, opponent, format, turn count, timestamps.
+
+Browse and download them from the dashboard's own web server at `/logs`
+(a listing page with a zip-download link per battle, plus
+`/logs/download-all` for everything at once). Since this is served from
+whatever public URL the dashboard is already running on (e.g. your Railway
+domain), set `LOGS_ACCESS_TOKEN` so `/logs` isn't world-readable — append
+`?token=...` to the URL, or send it as an `Authorization: Bearer ...`
+header.
+
+**On Railway specifically:** the filesystem is ephemeral — anything written
+to `BATTLE_LOG_DIR` is lost on redeploy or restart unless you attach a
+[Volume](https://docs.railway.com/reference/volumes) mounted at that path.
 
 ## Environment variables
 
@@ -60,6 +86,8 @@ spectator. It never sends any battle commands itself.
 | `SHOWDOWN_SERVER` | no | Websocket host to connect to (default `sim3.psim.us`). |
 | `RANDBATS_FORMAT` | no | Which random-battle format's set data to load (default `gen9randombattle`). |
 | `RANDBATS_REFRESH_MS` | no | How often to refresh the randbats set data (default 1 hour). |
+| `BATTLE_LOG_DIR` | no | Where finished-battle logs are written (default `./battle-logs`). See "Battle history" below. |
+| `LOGS_ACCESS_TOKEN` | no | If set, required (as `?token=...` or a Bearer header) to read `/logs`. Unset means anyone with the URL can browse battle history. |
 
 ## Running locally
 

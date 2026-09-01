@@ -8,6 +8,7 @@ import { analyzeBattle } from './analysis/analyzer.js';
 import { recommendAction } from './decision/recommendAction.js';
 import { DashboardServer } from './web/server.js';
 import { AutoPlayer } from './automation/autoPlayer.js';
+import { BattleLogger } from './logging/battleLogger.js';
 
 const ANALYSIS_DEBOUNCE_MS = 150;
 
@@ -15,7 +16,9 @@ async function main() {
   const repo = new RandbatsRepository();
   await repo.start();
 
-  const dashboard = new DashboardServer();
+  const logger = new BattleLogger();
+
+  const dashboard = new DashboardServer(logger);
   dashboard.listen(config.port);
 
   const conn = new ShowdownConnection();
@@ -24,7 +27,7 @@ async function main() {
   // Analysis mode (default/legacy): watch-only, never sends battle commands.
   // Automated mode (ANALYSIS_MODE=0): queues for and plays its own matches,
   // one after another, using the same recommendations below.
-  const autoPlayer = config.analysisMode ? undefined : new AutoPlayer(conn, manager, repo);
+  const autoPlayer = config.analysisMode ? undefined : new AutoPlayer(conn, manager, repo, logger);
   console.log(`[mode] ${config.analysisMode ? 'analysis (watch-only)' : 'automated (plays its own matches)'}`);
 
   const pendingAnalysis = new Map<string, NodeJS.Timeout>();
@@ -42,6 +45,27 @@ async function main() {
           console.error(`[decision] failed for ${session.roomid}:`, err);
         }
         dashboard.publishReport(report);
+        try {
+          if (report.active && report.recommendedAction) {
+            logger.recordDecision(session.roomid, {
+              turn: report.turn,
+              timestamp: Date.now(),
+              kind: 'turn',
+              yourActive: { species: report.active.yours.species, hpPercent: report.active.yours.hpPercent, status: report.active.yours.status },
+              opponentActive: {
+                species: report.active.opponent.species,
+                hpPercent: report.active.opponent.hpPercent,
+                status: report.active.opponent.status,
+                candidateRoles: report.active.opponent.candidateRoles,
+              },
+              verdict: report.recommendedAction.verdict,
+              chosen: report.recommendedAction.action,
+              alternatives: report.recommendedAction.alternatives,
+            });
+          }
+        } catch (err) {
+          console.error(`[log] decision recording failed for ${session.roomid}:`, err);
+        }
         try {
           autoPlayer?.act(session, report);
         } catch (err) {
@@ -61,6 +85,8 @@ async function main() {
 
   manager.on('battle-start', (session: BattleSession) => {
     console.log(`[battle] started: ${session.roomid}`);
+    logger.startBattle(session.roomid);
+    session.on('update', (line: string) => logger.recordLine(session.roomid, line));
     updateRooms();
     scheduleAnalysis(session);
   });
@@ -74,6 +100,10 @@ async function main() {
     pendingAnalysis.delete(session.roomid);
     dashboard.removeReport(session.roomid);
     updateRooms();
+    logger
+      .finishBattle(session)
+      .then((summary) => summary && console.log(`[log] saved ${summary.id} (${summary.result})`))
+      .catch((err) => console.error(`[log] failed to save battle ${session.roomid}:`, err));
   });
 
   conn.on('open', () => console.log('[showdown] connected'));
