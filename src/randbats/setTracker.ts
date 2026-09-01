@@ -47,17 +47,6 @@ export interface PokemonRevealState {
   moveIds: string[];
   /** set only once the Pokemon has actually Terastallized this battle */
   teraType?: string;
-  /** true once this Pokemon has freely chosen 2+ distinct moves since its
-   * last switch-in -- a hard proof it isn't holding a Choice item (see
-   * ChoiceLockTracker). Rules out both any role whose only possible items
-   * are Choice items, and Choice items specifically within a mixed pool. */
-  choiceItemRuledOut?: boolean;
-}
-
-const CHOICE_ITEM_IDS = new Set(['choiceband', 'choicespecs', 'choicescarf']);
-
-function isChoiceItem(item: string): boolean {
-  return CHOICE_ITEM_IDS.has(toID(item));
 }
 
 function hasId(list: string[], id: string): boolean {
@@ -105,15 +94,12 @@ function toSorted(dist: Map<string, number>): WeightedOption[] {
 
 function roleMatches(
   role: RandbatsRole,
-  info: { knownAbility?: string; knownItem?: string; knownTera?: string; revealedMoves: string[]; choiceItemRuledOut?: boolean }
+  info: { knownAbility?: string; knownItem?: string; knownTera?: string; revealedMoves: string[] }
 ): boolean {
   const r = normalizeRole(role);
   if (info.knownAbility && !hasId(r.abilities, info.knownAbility)) return false;
   if (info.knownItem && !hasId(r.items, info.knownItem)) return false;
   if (info.knownTera && !hasId(r.teraTypes, info.knownTera)) return false;
-  // A role whose every possible item is a Choice item is impossible once
-  // we've proven (via free move choice) that this Pokemon isn't holding one.
-  if (info.choiceItemRuledOut && r.items.length > 0 && r.items.every(isChoiceItem)) return false;
   for (const moveId of info.revealedMoves) {
     if (!hasId(r.moves, moveId)) return false;
   }
@@ -149,9 +135,8 @@ export function narrowSet(pokemon: PokemonRevealState, repo: RandbatsRepository)
     };
   }
 
-  const choiceItemRuledOut = pokemon.choiceItemRuledOut ?? false;
   let roleEntries = Object.entries(speciesEntry.roles).filter(([, role]) =>
-    roleMatches(role, { knownAbility, knownItem, knownTera, revealedMoves, choiceItemRuledOut })
+    roleMatches(role, { knownAbility, knownItem, knownTera, revealedMoves })
   );
   const inconsistent = roleEntries.length === 0;
   if (inconsistent) {
@@ -169,14 +154,8 @@ export function narrowSet(pokemon: PokemonRevealState, repo: RandbatsRepository)
 
   for (const [, rawRole] of roleEntries) {
     const role = normalizeRole(rawRole);
-    // A role surviving the filter above always has a non-Choice item left,
-    // UNLESS the whole species turned out inconsistent and every role
-    // (including all-Choice ones) got put back in as a fallback -- in that
-    // case keep the unfiltered list rather than risk an empty distribution.
-    const nonChoiceItems = role.items.filter((i) => !isChoiceItem(i));
-    const items = choiceItemRuledOut && nonChoiceItems.length > 0 ? nonChoiceItems : role.items;
     accumulate(abilityDist, role.abilities, roleWeight);
-    accumulate(itemDist, items, roleWeight);
+    accumulate(itemDist, role.items, roleWeight);
     accumulate(teraDist, role.teraTypes, roleWeight);
 
     const poolSize = role.moves.length;
@@ -231,10 +210,9 @@ export function buildSetCandidates(
   const revealedMoves = pokemon.moveIds.filter(Boolean);
   const knownAbility = pokemon.ability || undefined;
   const knownItem = pokemon.item || pokemon.lastItem || undefined;
-  const choiceItemRuledOut = pokemon.choiceItemRuledOut ?? false;
 
   let roleEntries = Object.entries(speciesEntry.roles).filter(([, role]) =>
-    roleMatches(role, { knownAbility, knownItem, knownTera: undefined, revealedMoves, choiceItemRuledOut })
+    roleMatches(role, { knownAbility, knownItem, knownTera: undefined, revealedMoves })
   );
   if (roleEntries.length === 0) roleEntries = Object.entries(speciesEntry.roles);
 
@@ -255,11 +233,9 @@ export function buildSetCandidates(
     const abilities = knownAbility && hasId(role.abilities, knownAbility)
       ? [role.abilities.find((a) => toID(a) === toID(knownAbility))!]
       : role.abilities;
-    const nonChoiceItems = role.items.filter((i) => !isChoiceItem(i));
-    const itemPool = choiceItemRuledOut && nonChoiceItems.length > 0 ? nonChoiceItems : role.items;
-    const items = knownItem && hasId(itemPool, knownItem)
-      ? [itemPool.find((i) => toID(i) === toID(knownItem))!]
-      : itemPool;
+    const items = knownItem && hasId(role.items, knownItem)
+      ? [role.items.find((i) => toID(i) === toID(knownItem))!]
+      : role.items;
     for (const ability of abilities) {
       for (const item of items) {
         candidates.push({
