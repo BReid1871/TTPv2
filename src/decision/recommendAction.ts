@@ -212,7 +212,7 @@ function evaluateTeraFlip(
 
   const requestInfo = getRequestInfo(session.battle, mySideObj);
   const teraCalc = buildYourCalcPokemon(myActive, requestInfo.get(myActive), teraType);
-  const opponentScenarios = buildOpponentScenarios(foeActive, repo, session.damageEvidence.getEvidence(foeActive.speciesForme));
+  const opponentScenarios = buildOpponentScenarios(foeActive, repo, session.damageEvidence.getEvidence(foeActive.speciesForme), session.choiceLock.ruledOutChoiceItem(foeActive.ident));
   const field = buildField(session.battle, mySideId);
 
   const theirWorstCaseVsTeraMe = worstCaseIncomingPercent(opponentScenarios, teraCalc, matchup.opponentMovesVsYou.map((m) => m.name), field);
@@ -318,7 +318,7 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
         const requestInfo = getRequestInfo(session.battle, mySideObj);
         boostReconstruction = {
           yourCalc: buildYourCalcPokemon(myActive, requestInfo.get(myActive)),
-          opponentScenarios: buildOpponentScenarios(foeActive, repo, session.damageEvidence.getEvidence(foeActive.speciesForme)),
+          opponentScenarios: buildOpponentScenarios(foeActive, repo, session.damageEvidence.getEvidence(foeActive.speciesForme), session.choiceLock.ruledOutChoiceItem(foeActive.ident)),
           field: buildField(session.battle, mySideId),
         };
       }
