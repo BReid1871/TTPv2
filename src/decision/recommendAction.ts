@@ -1,11 +1,12 @@
 import { Generations, toID } from '@pkmn/data';
 import { Dex } from '@pkmn/dex';
 import type { Side as ClientSide, Pokemon as ClientPokemon } from '@pkmn/client';
+import type { Pokemon as CalcPokemon, Field as CalcField } from '@smogon/calc';
 import type { BattleSession } from '../battle/battleSession.js';
 import { getRequestInfo } from '../battle/requestStats.js';
 import type { RandbatsRepository } from '../randbats/data.js';
-import { buildField } from '../calc/damage.js';
-import { buildYourCalcPokemon, buildOpponentScenarios, buildMatchup } from '../analysis/analyzer.js';
+import { buildField, computeMoveDamage } from '../calc/damage.js';
+import { buildYourCalcPokemon, buildOpponentScenarios, buildMatchup, type CandidateScenario } from '../analysis/analyzer.js';
 import type { AnalysisReport, MoveDamageReport, PokemonMatchup } from '../analysis/types.js';
 import { availableTurns, availableTurnsAfterSwitch, proposedOpponentTurns, isFavorable } from './availableTurns.js';
 import { selfBoostsFor, bestAttackDamagePercent } from './boostedDamage.js';
@@ -149,6 +150,89 @@ export function buildSwitchCandidates(bench: PokemonMatchup[], mySideObj: Client
       accuracy: 100, // switching itself always succeeds
     };
   });
+}
+
+/** Worst-case damage (max roll, across every candidate attacker scenario and
+ * every move name given) into a fixed defender -- same "worst case across
+ * scenarios and moves" convention as the rest of this file, just aimed at a
+ * hypothetical defender (the tera-flip check's tera'd "you") instead of the
+ * analyzer's already-computed opponentMovesVsYou. */
+function worstCaseIncomingPercent(attackerScenarios: CandidateScenario[], defender: CalcPokemon, moveNames: string[], field: CalcField): number {
+  let worst = 0;
+  for (const moveName of moveNames) {
+    for (const scenario of attackerScenarios) {
+      const result = computeMoveDamage(scenario.calcPokemon, defender, moveName, field);
+      if (!result) continue;
+      worst = Math.max(worst, result.maxPercent);
+    }
+  }
+  return worst;
+}
+
+/** The single best confirmed attacking move's guaranteed floor damage
+ * (worst case across the opponent's candidate defender scenarios), plus
+ * which move produced it -- same "floor roll, guaranteed at worst"
+ * convention as the main attack-candidate loop in recommendAction. */
+function bestFloorMove(attacker: CalcPokemon, defenderScenarios: CandidateScenario[], moveNames: string[], field: CalcField): { name: string; percent: number } | undefined {
+  let best: { name: string; percent: number } | undefined;
+  for (const moveName of moveNames) {
+    let min = Infinity;
+    for (const scenario of defenderScenarios) {
+      const result = computeMoveDamage(attacker, scenario.calcPokemon, moveName, field);
+      if (!result) continue;
+      min = Math.min(min, result.minPercent);
+    }
+    if (min !== Infinity && (!best || min > best.percent)) best = { name: moveName, percent: min };
+  }
+  return best;
+}
+
+/** If Tera is still available on `myActive` and nothing else favorable
+ * exists (the opponent holds the available-turns advantage no matter what
+ * we do this turn), check whether Terastallizing would flip that race:
+ * Tera changes both my defensive typing (their worst-case damage into me)
+ * and my offensive STAB (my best attack's damage into them). Only returns
+ * an action when Tera actually turns the race favorable -- otherwise the
+ * caller's least-bad fallback still applies. */
+function evaluateTeraFlip(
+  matchup: PokemonMatchup,
+  myActive: ClientPokemon,
+  foeActive: ClientPokemon,
+  session: BattleSession,
+  mySideObj: ClientSide,
+  mySideId: 'p1' | 'p2',
+  repo: RandbatsRepository,
+  isFaster: boolean
+): ActionEvaluation | undefined {
+  const teraType = myActive.canTerastallize;
+  if (!teraType) return undefined;
+
+  const attackMoveNames = matchup.yourMovesVsOpponent.filter((m) => m.confirmed).map((m) => m.name);
+  if (attackMoveNames.length === 0) return undefined;
+
+  const requestInfo = getRequestInfo(session.battle, mySideObj);
+  const teraCalc = buildYourCalcPokemon(myActive, requestInfo.get(myActive), teraType);
+  const opponentScenarios = buildOpponentScenarios(foeActive, repo, session.damageEvidence.getEvidence(foeActive.speciesForme));
+  const field = buildField(session.battle, mySideId);
+
+  const theirWorstCaseVsTeraMe = worstCaseIncomingPercent(opponentScenarios, teraCalc, matchup.opponentMovesVsYou.map((m) => m.name), field);
+  const myTurnsIfTera = availableTurns(matchup.yours.hpPercent, theirWorstCaseVsTeraMe);
+
+  const best = bestFloorMove(teraCalc, opponentScenarios, attackMoveNames, field);
+  if (!best) return undefined;
+  const theirTurnsIfTera = proposedOpponentTurns(matchup.opponent.hpPercent, best.percent, best.percent);
+
+  if (!isFavorable(myTurnsIfTera, theirTurnsIfTera, isFaster)) return undefined;
+
+  return {
+    kind: 'tera',
+    label: `Terastallize (${teraType}) + ${best.name}`,
+    myAvailableTurns: myTurnsIfTera,
+    opponentProposedAvailableTurns: theirTurnsIfTera,
+    favorable: true,
+    persistentBoost: false,
+    accuracy: moveAccuracy(best.name),
+  };
 }
 
 /** Among candidates tied on turns-to-KO, prefer persistent setup, then the
@@ -305,6 +389,14 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
   if (favorableSwitch.length > 0) {
     const winner = pickBestByTurnsThenBoost(favorableSwitch);
     return { action: winner, verdict: 'favorable', alternatives: candidates.filter((c) => c !== winner) };
+  }
+
+  // --- Nothing favorable found -- the opponent holds the available-turns
+  // advantage no matter what we do. Last check before giving up: would
+  // Terastallizing flip that race? Only taken if it actually does. ---
+  const teraFlip = evaluateTeraFlip(matchup, myActive, foeActive, session, mySideObj, mySideId, repo, isFaster);
+  if (teraFlip) {
+    return { action: teraFlip, verdict: 'favorable', alternatives: candidates };
   }
 
   const leastBad = candidates.reduce((best, c) => ((c.myAvailableTurns - c.opponentProposedAvailableTurns) > (best.myAvailableTurns - best.opponentProposedAvailableTurns) ? c : best));

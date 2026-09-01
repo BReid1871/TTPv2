@@ -118,12 +118,19 @@ function toOpponentInfo(p: ClientPokemon, repo: RandbatsRepository, isActive: bo
 /** Build the exact calc.Pokemon for one of *your* team members, using the
  * server-authoritative |request| stats/HP rather than any estimate -- see
  * getRequestInfo's doc comment for why request-derived HP (not
- * ClientPokemon's own maxhp) matters here specifically. */
-export function buildYourCalcPokemon(p: ClientPokemon, info?: RequestPokemonInfo): CalcPokemon {
+ * ClientPokemon's own maxhp) matters here specifically.
+ *
+ * `teraOverride`: build this Pokemon as if already Terastallized into the
+ * given type, regardless of whether it actually has yet -- used to evaluate
+ * a hypothetical "what if I Terastallize this turn" line (see
+ * recommendAction.ts's tera-flip check) without needing a second code path.
+ * Defaults to the real, already-Terastallized state (`p.terastallized`). */
+export function buildYourCalcPokemon(p: ClientPokemon, info?: RequestPokemonInfo, teraOverride?: string): CalcPokemon {
   const maxHp = info?.maxhp || p.maxhp || 1;
   const rawStats = info?.stats
     ? { hp: maxHp, ...info.stats }
     : { hp: maxHp, atk: 1, def: 1, spa: 1, spd: 1, spe: 1 };
+  const teraType = teraOverride ?? p.terastallized;
   return buildKnownPokemon(p.speciesForme, {
     speciesForme: p.speciesForme,
     level: p.level,
@@ -135,8 +142,8 @@ export function buildYourCalcPokemon(p: ClientPokemon, info?: RequestPokemonInfo
     ability: p.ability ? displayAbilityName(p.ability) : p.ability,
     item: p.item ? displayItemName(p.item) : p.item,
     status: p.status,
-    teraType: p.terastallized,
-    isTerastallized: !!p.terastallized,
+    teraType,
+    isTerastallized: !!teraType,
     rawStats,
     boosts: pickBoosts(p),
     currentHpFraction: yourHpFraction(p, info),
