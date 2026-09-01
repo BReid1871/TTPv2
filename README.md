@@ -13,14 +13,7 @@ Runs in one of two modes, set via `ANALYSIS_MODE`:
   queues for the next one when it ends — leave it running and it'll keep
   playing on its own. It plays *every* battle its account ends up in, so
   don't also play manually on that account while this mode is running; use
-  analysis mode for that instead. Set `MAX_CONCURRENT_BATTLES` (default `1`)
-  to play more than one battle at once — it ramps up to that many by
-  re-queueing immediately each time a match lands, since Showdown only
-  allows one outstanding search at a time. Note this makes the account look
-  more obviously bot-like (near-continuous play across several rooms at
-  once), which is the kind of pattern that gets a bot account reported —
-  Showdown has no hard rule against automation, but staff permaban bot
-  accounts on a case-by-case basis once they're noticed.
+  analysis mode for that instead.
 
 - Damage % (min–max) for every one of your moves against the opponent's active Pokemon
 - Damage % (min–max) for every move the opponent's Pokemon could plausibly know against you
@@ -55,32 +48,6 @@ spectator. It never sends any battle commands itself.
   their most probable candidate sets when a detail isn't confirmed yet.
 - `src/web/` — a tiny Express + `ws` server that pushes each new
   `AnalysisReport` to a live browser dashboard (`src/web/public/`).
-- `src/logging/battleLogger.ts` — records every finished battle to disk: the
-  raw protocol log plus a per-turn snapshot of what the recommendation
-  engine chose and every alternative it weighed. Served at `/logs` (see
-  below).
-
-## Battle history (`/logs`)
-
-Every battle (analysis or automated mode) gets its own folder under
-`BATTLE_LOG_DIR`, written when the battle ends:
-
-- `battle.log` — the raw Showdown protocol log, one line per event.
-- `recommendations.json` — one entry per turn: the chosen action and every
-  alternative the decision engine weighed (turns-to-win, accuracy, etc.).
-- `meta.json` — result, opponent, format, turn count, timestamps.
-
-Browse and download them from the dashboard's own web server at `/logs`
-(a listing page with a zip-download link per battle, plus
-`/logs/download-all` for everything at once). Since this is served from
-whatever public URL the dashboard is already running on (e.g. your Railway
-domain), set `LOGS_ACCESS_TOKEN` so `/logs` isn't world-readable — append
-`?token=...` to the URL, or send it as an `Authorization: Bearer ...`
-header.
-
-**On Railway specifically:** the filesystem is ephemeral — anything written
-to `BATTLE_LOG_DIR` is lost on redeploy or restart unless you attach a
-[Volume](https://docs.railway.com/reference/volumes) mounted at that path.
 
 ## Environment variables
 
@@ -93,9 +60,6 @@ to `BATTLE_LOG_DIR` is lost on redeploy or restart unless you attach a
 | `SHOWDOWN_SERVER` | no | Websocket host to connect to (default `sim3.psim.us`). |
 | `RANDBATS_FORMAT` | no | Which random-battle format's set data to load (default `gen9randombattle`). |
 | `RANDBATS_REFRESH_MS` | no | How often to refresh the randbats set data (default 1 hour). |
-| `MAX_CONCURRENT_BATTLES` | no | Automated mode only: how many battles to play at once (default `1`). |
-| `BATTLE_LOG_DIR` | no | Where finished-battle logs are written (default `./battle-logs`). See "Battle history" below. |
-| `LOGS_ACCESS_TOKEN` | no | If set, required (as `?token=...` or a Bearer header) to read `/logs`. Unset means anyone with the URL can browse battle history. |
 
 ## Running locally
 

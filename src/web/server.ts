@@ -1,29 +1,11 @@
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import express, { type Request, type Response, type NextFunction } from 'express';
+import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
-import { ZipArchive } from 'archiver';
 import type { AnalysisReport } from '../analysis/types.js';
-import type { BattleLogger } from '../logging/battleLogger.js';
-import { renderLogsPage } from './logsPage.js';
-import { config } from '../config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const LOG_FILES = new Set(['battle.log', 'recommendations.json', 'meta.json']);
-
-function firstString(v: unknown): string | undefined {
-  return typeof v === 'string' ? v : Array.isArray(v) && typeof v[0] === 'string' ? v[0] : undefined;
-}
-
-function streamZip(res: Response, folder: string, filename: string): void {
-  res.attachment(filename);
-  const archive = new ZipArchive();
-  archive.on('error', (err: Error) => res.status(500).end(String(err)));
-  archive.pipe(res);
-  archive.directory(folder, false);
-  archive.finalize();
-}
 
 export interface RoomSummary {
   roomid: string;
@@ -41,9 +23,8 @@ export class DashboardServer {
   private readonly latestReports = new Map<string, AnalysisReport>();
   private rooms: RoomSummary[] = [];
 
-  constructor(private readonly logger: BattleLogger) {
+  constructor() {
     this.app.use(express.static(path.join(__dirname, 'public')));
-    this.mountLogRoutes();
 
     this.wss.on('connection', (ws) => {
       this.send(ws, { type: 'rooms', rooms: this.rooms });
@@ -51,65 +32,7 @@ export class DashboardServer {
         this.send(ws, { type: 'report', report });
       }
     });
-
-    if (!config.logsAccessToken) {
-      console.warn('[web] LOGS_ACCESS_TOKEN not set -- /logs battle history is publicly readable at this URL');
-    }
   }
-
-  /** Battle history: a listing page plus per-battle files (raw protocol
-   * log + the recommendation engine's per-turn options/weights) written by
-   * BattleLogger. Gated by LOGS_ACCESS_TOKEN if set (see requireLogAccess). */
-  private mountLogRoutes(): void {
-    this.app.get('/logs', this.requireLogAccess, (req, res) => {
-      const summaries = this.logger.listSummaries();
-      res.type('html').send(renderLogsPage(summaries, !!config.logsAccessToken, firstString(req.query.token)));
-    });
-
-    this.app.get('/logs/data', this.requireLogAccess, (req, res) => {
-      res.json(this.logger.listSummaries());
-    });
-
-    this.app.get('/logs/download-all', this.requireLogAccess, (req, res) => {
-      streamZip(res, this.logger.directory, 'battle-logs.zip');
-    });
-
-    this.app.get('/logs/:id/:file', this.requireLogAccess, (req, res) => {
-      const id = firstString(req.params.id) ?? '';
-      const file = firstString(req.params.file) ?? '';
-      const folder = this.logger.folderFor(id);
-      if (!folder) {
-        res.status(404).send('Not found');
-        return;
-      }
-      if (file === 'download') {
-        streamZip(res, folder, `${id}.zip`);
-        return;
-      }
-      if (!LOG_FILES.has(file)) {
-        res.status(404).send('Not found');
-        return;
-      }
-      res.sendFile(path.join(folder, file));
-    });
-  }
-
-  /** No-op (calls next()) when LOGS_ACCESS_TOKEN isn't configured -- see the
-   * startup warning above. Accepts the token as ?token=... or a Bearer
-   * header so both browser links and scripted downloads work. */
-  private requireLogAccess = (req: Request, res: Response, next: NextFunction): void => {
-    const token = config.logsAccessToken;
-    if (!token) {
-      next();
-      return;
-    }
-    const provided = firstString(req.query.token) ?? req.get('authorization')?.replace(/^Bearer\s+/i, '');
-    if (provided === token) {
-      next();
-      return;
-    }
-    res.status(401).send('Unauthorized');
-  };
 
   listen(port: number): void {
     this.httpServer.listen(port, () => {

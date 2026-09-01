@@ -7,8 +7,6 @@ import type { BattleSession } from '../battle/battleSession.js';
 import type { RandbatsRepository } from '../randbats/data.js';
 import { recommendForcedSwitch } from '../decision/recommendAction.js';
 import type { AnalysisReport } from '../analysis/types.js';
-import type { RecommendedAction } from '../decision/types.js';
-import type { BattleLogger } from '../logging/battleLogger.js';
 
 // Last-resort-only backstop (see queueNextBattle) -- normal matchmaking
 // waits routinely exceed this by a lot, so it must never be short enough to
@@ -37,17 +35,13 @@ export class AutoPlayer {
   constructor(
     private readonly conn: ShowdownConnection,
     private readonly manager: BattleManager,
-    private readonly repo: RandbatsRepository,
-    private readonly logger?: BattleLogger
+    private readonly repo: RandbatsRepository
   ) {
     manager.on('battle-start', (session: BattleSession) => {
       this.searching = false;
       // Without this an AFK/stalling opponent can leave the battle hanging
       // forever -- start the timer on entry so inactivity auto-forfeits.
       this.conn.timerOn(session.roomid);
-      // With maxConcurrentBattles > 1, don't wait for this battle to end --
-      // immediately try to fill any remaining concurrency slots too.
-      this.queueNextBattle();
     });
     manager.on('battle-end', (session: BattleSession) => {
       this.actedOn.delete(session.roomid);
@@ -66,14 +60,8 @@ export class AutoPlayer {
     this.queueNextBattle();
   }
 
-  /** Only ever one outstanding /search at a time -- Showdown treats a second
-   * /search for a format you're already searching as *cancelling* the
-   * first, not queueing a second ticket, so N concurrent battles is reached
-   * by re-searching immediately each time a match lands (see the
-   * battle-start handler above and handleSearchUpdate below), not by
-   * issuing several searches at once. */
   private queueNextBattle(): void {
-    if (this.searching || this.manager.sessions.size >= config.maxConcurrentBattles) return;
+    if (this.searching || this.manager.sessions.size > 0) return;
     this.searching = true;
     this.searchIssuedAt = Date.now();
     this.conn.search(config.randbatsFormat);
@@ -83,12 +71,7 @@ export class AutoPlayer {
     // |updatesearch| pushes) is the primary, much faster-reacting signal --
     // this only covers that one message never arriving in the first place.
     setTimeout(() => {
-      // this.searching still true this long after issuing it means this
-      // particular search never resolved (no confirmation, no match) --
-      // true regardless of how many *other* battles are concurrently
-      // running, so unlike the size check this used to have, nothing here
-      // depends on sessions.size.
-      if (this.searching) {
+      if (this.searching && this.manager.sessions.size === 0) {
         this.searching = false;
         this.queueNextBattle();
       }
@@ -107,14 +90,10 @@ export class AutoPlayer {
     if (Date.now() - this.searchIssuedAt < SEARCH_CONFIRM_GRACE_MS) return;
     const stillSearching = (state.searching ?? []).includes(config.randbatsFormat);
     if (stillSearching) return;
-    // No longer searching for this format -- either a match landed (the
-    // battle-start handler already cleared `searching` and re-queued, so
-    // the early return above already caught that case) or the search
-    // genuinely dropped. Either way, sessions.size is irrelevant here with
-    // maxConcurrentBattles > 1 -- other unrelated battles can legitimately
-    // be in progress while *this* search dropped.
-    this.searching = false;
-    this.queueNextBattle();
+    if (this.manager.sessions.size === 0) {
+      this.searching = false;
+      this.queueNextBattle();
+    }
   }
 
   /** A /choose the server rejected (e.g. we recommended a switch while
@@ -150,7 +129,6 @@ export class AutoPlayer {
 
     if (request.requestType === 'switch') {
       const forced = recommendForcedSwitch(session, this.repo);
-      if (forced) this.logForcedSwitch(session, forced);
       return this.switchChoiceFor(request.side.pokemon, forced?.action.label) ?? this.firstLegalSwitch(request.side.pokemon);
     }
 
@@ -194,24 +172,6 @@ export class AutoPlayer {
     }
     const idx = active.moves.findIndex((m) => !('disabled' in m && m.disabled));
     return idx >= 0 ? `move ${idx + 1}` : 'move 1';
-  }
-
-  /** recommendForcedSwitch has no AnalysisReport to piggyback on (your
-   * active just fainted, so analyzeBattle's "waiting" gate never produces
-   * report.active -- see recommendAction.ts's doc comment on
-   * recommendForcedSwitch) -- pull the opponent snapshot straight from the
-   * live session instead so this decision still lands in the log. */
-  private logForcedSwitch(session: BattleSession, forced: RecommendedAction): void {
-    const foeActive = session.foeSideObj?.active[0];
-    this.logger?.recordDecision(session.roomid, {
-      turn: session.battle.turn,
-      timestamp: Date.now(),
-      kind: 'forced-switch',
-      opponentActive: foeActive ? { species: foeActive.speciesForme, hpPercent: foeActive.hp && foeActive.maxhp ? Math.round((foeActive.hp / foeActive.maxhp) * 100) : 100, status: foeActive.status, candidateRoles: [] } : undefined,
-      verdict: forced.verdict,
-      chosen: forced.action,
-      alternatives: forced.alternatives,
-    });
   }
 
   private switchChoiceFor(pokemon: Protocol.Request.Pokemon[], label: string | undefined): string | undefined {
