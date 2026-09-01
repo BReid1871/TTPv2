@@ -6,8 +6,8 @@ import type { BattleSession } from '../battle/battleSession.js';
 import { getRequestInfo } from '../battle/requestStats.js';
 import type { RandbatsRepository } from '../randbats/data.js';
 import { buildField, computeMoveDamage } from '../calc/damage.js';
-import { buildYourCalcPokemon, buildOpponentScenarios, buildMatchup, type CandidateScenario } from '../analysis/analyzer.js';
-import type { AnalysisReport, MoveDamageReport, PokemonMatchup } from '../analysis/types.js';
+import { buildYourCalcPokemon, buildOpponentScenarios, buildMatchup, buildSpeedReport, type CandidateScenario } from '../analysis/analyzer.js';
+import type { AnalysisReport, MoveDamageReport, OpponentSetInfo, PokemonMatchup } from '../analysis/types.js';
 import { availableTurns, availableTurnsAfterSwitch, proposedOpponentTurns, isFavorable } from './availableTurns.js';
 import { selfBoostsFor, bestAttackDamagePercent } from './boostedDamage.js';
 import type { ActionEvaluation, RecommendedAction } from './types.js';
@@ -249,11 +249,87 @@ export function pickBestByTurnsThenBoost(list: ActionEvaluation[]): ActionEvalua
   });
 }
 
+/** The available-turns race between `myCalc` (fixed) and `benchMon` using
+ * `moveName`, exactly as isFavorable would score it if `benchMon` were
+ * switched in right now -- undefined if the damage calc couldn't produce an
+ * answer (missing move data, no candidate scenarios, ...), never guessed. */
+function raceAgainstBenchMon(
+  moveName: string,
+  bench: OpponentSetInfo,
+  myCalc: CalcPokemon,
+  myHpPercent: number,
+  foeSideObj: ClientSide,
+  session: BattleSession,
+  mySideId: 'p1' | 'p2',
+  repo: RandbatsRepository,
+  field: CalcField
+): boolean | undefined {
+  const benchMon = foeSideObj.team.find((p) => p.ident === bench.ident);
+  if (!benchMon) return undefined;
+  const evidence = session.damageEvidence.getEvidence(benchMon.speciesForme);
+  const choiceRuledOut = session.choiceLock.ruledOutChoiceItem(benchMon.ident);
+  const benchScenarios = buildOpponentScenarios(benchMon, repo, evidence, choiceRuledOut);
+
+  const ourHit = bestFloorMove(myCalc, benchScenarios, [moveName], field);
+  if (!ourHit) return undefined;
+  const benchMoveNames = [...bench.revealedMoves, ...bench.possibleRemainingMoves.map((m) => m.name)];
+  const theirWorstVsUs = worstCaseIncomingPercent(benchScenarios, myCalc, benchMoveNames, field);
+  const myTurns = availableTurns(myHpPercent, theirWorstVsUs);
+  const theirTurns = proposedOpponentTurns(bench.hpPercent, ourHit.percent, ourHit.percent);
+  const isFasterVsBench = buildSpeedReport(myCalc, benchScenarios, session, mySideId).youAreFasterMostLikely;
+  return isFavorable(myTurns, theirTurns, isFasterVsBench);
+}
+
+/**
+ * A favorable stay-and-attack pick (`winner`) can still walk into a trap: if
+ * the opponent predicts it and switches into whichever revealed bench
+ * Pokemon turns the race back in their favor, `winner`'s "advantage" never
+ * actually happens. This checks every revealed (non-fainted) bench Pokemon
+ * for exactly that, and if one exists, looks for a different confirmed
+ * attacking move that (a) keeps the race favorable against that predicted
+ * switch-in AND (b) is still favorable against the opponent's current
+ * Pokemon too (`c.favorable`, already computed against the real matchup) --
+ * so it's never a downgrade if they don't actually switch. Only overrides
+ * `winner` when both hold; an unresolved race (undefined) never counts as
+ * either a threat or a fix, matching this file's "don't guess" convention. */
+function pickSwitchSafeAlternative(
+  winner: ActionEvaluation,
+  candidates: ActionEvaluation[],
+  report: AnalysisReport,
+  myCalc: CalcPokemon,
+  myHpPercent: number,
+  foeSideObj: ClientSide,
+  session: BattleSession,
+  mySideId: 'p1' | 'p2',
+  repo: RandbatsRepository,
+  field: CalcField
+): { action: ActionEvaluation; threatSpecies: string } | undefined {
+  if (winner.kind !== 'attack') return undefined;
+  const revealedBench = report.opponentRevealedBench.filter((b) => !b.fainted);
+  if (revealedBench.length === 0) return undefined;
+
+  const threat = revealedBench.find(
+    (bench) => raceAgainstBenchMon(winner.label, bench, myCalc, myHpPercent, foeSideObj, session, mySideId, repo, field) === false
+  );
+  if (!threat) return undefined; // nothing on their revealed bench flips the race
+
+  const otherFavorableAttacks = candidates.filter((c) => c.kind === 'attack' && c !== winner && c.favorable);
+  const safeAlternatives = otherFavorableAttacks.filter(
+    (c) => raceAgainstBenchMon(c.label, threat, myCalc, myHpPercent, foeSideObj, session, mySideId, repo, field) === true
+  );
+  if (safeAlternatives.length === 0) return undefined;
+
+  return { action: pickBestByTurnsThenBoost(safeAlternatives), threatSpecies: threat.species };
+}
+
 /**
  * Recommends what to do this turn against the opponent's current active
- * Pokemon (no opponent-switch prediction -- immediate threat only), via a
- * resource comparison ("available turns") rather than a weighted score. See
- * /root/.claude/plans/robust-popping-lemur.md for the full design.
+ * Pokemon, via a resource comparison ("available turns") rather than a
+ * weighted score. See /root/.claude/plans/robust-popping-lemur.md for the
+ * full design. The only opponent-switch prediction modeled is
+ * pickSwitchSafeAlternative below (a favorable attack that would stop being
+ * favorable against a specific revealed bench Pokemon) -- everything else
+ * evaluates the immediate threat only.
  *
  * Deliberately compute-only: nothing here sends a /choose to the server.
  */
@@ -381,6 +457,16 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
   const favorableStay = stayActions.filter((c) => c.favorable);
   if (favorableStay.length > 0) {
     const winner = pickBestByTurnsThenBoost(favorableStay);
+    if (winner.kind === 'attack') {
+      const requestInfo = getRequestInfo(session.battle, mySideObj);
+      const myCalc = buildYourCalcPokemon(myActive, requestInfo.get(myActive));
+      const field = buildField(session.battle, mySideId);
+      const switchSafe = pickSwitchSafeAlternative(winner, candidates, report, myCalc, matchup.yours.hpPercent, foeSideObj, session, mySideId, repo, field);
+      if (switchSafe) {
+        const finalAction: ActionEvaluation = { ...switchSafe.action, label: `${switchSafe.action.label} (safer vs predicted switch to ${switchSafe.threatSpecies})` };
+        return { action: finalAction, verdict: 'favorable', alternatives: candidates.filter((c) => c !== switchSafe.action) };
+      }
+    }
     return { action: winner, verdict: 'favorable', alternatives: candidates.filter((c) => c !== winner) };
   }
 

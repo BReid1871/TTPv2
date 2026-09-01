@@ -334,7 +334,7 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
-function buildSpeedReport(
+export function buildSpeedReport(
   yourCalcPokemon: CalcPokemon,
   opponentScenarios: CandidateScenario[],
   session: BattleSession,
