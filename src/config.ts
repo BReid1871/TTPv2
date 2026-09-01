@@ -14,13 +14,6 @@ export const config = {
   // ?token=... or an `Authorization: Bearer ...` header -- unset means
   // those routes are open to anyone who can reach the public URL.
   logsAccessToken: process.env.LOGS_ACCESS_TOKEN,
-  // How many Random Battles AutoPlayer will play at once. Defaults to 1
-  // (the original, single-battle-at-a-time behavior). Showdown treats a
-  // second /search for a format you're already searching as *cancelling*
-  // the first rather than queueing a second ticket, so this doesn't burst
-  // N searches at once -- it ramps up to N concurrent battles by
-  // re-searching immediately after each one lands, capped at this number.
-  maxConcurrentBattles: Math.max(1, Number(process.env.MAX_CONCURRENT_BATTLES ?? 1)),
   // ANALYSIS_MODE=1 -> analysis mode (watch-only, never acts, current/legacy
   // behavior). ANALYSIS_MODE=0 -> automated mode (queues for and plays its
   // own Random Battles using the same recommendation engine). Defaults to
