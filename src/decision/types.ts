@@ -1,4 +1,4 @@
-export type ActionKind = 'attack' | 'boost' | 'heal' | 'utility' | 'switch';
+export type ActionKind = 'attack' | 'boost' | 'heal' | 'utility' | 'switch' | 'tera';
 
 export interface ActionEvaluation {
   kind: ActionKind;
