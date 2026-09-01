@@ -19,10 +19,12 @@
     "@pkmn/protocol": "^0.7.3",
     "@pkmn/sets": "^5.2.0",
     "@smogon/calc": "^0.11.0",
+    "archiver": "^8.0.0",
     "express": "^5.2.1",
     "ws": "^8.21.3"
   },
   "devDependencies": {
+    "@types/archiver": "^8.0.0",
     "@types/express": "^5.0.6",
     "@types/node": "^26.4.0",
     "@types/ws": "^8.18.1",
