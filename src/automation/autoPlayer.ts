@@ -7,8 +7,6 @@ import type { BattleSession } from '../battle/battleSession.js';
 import type { RandbatsRepository } from '../randbats/data.js';
 import { recommendForcedSwitch } from '../decision/recommendAction.js';
 import type { AnalysisReport } from '../analysis/types.js';
-import type { RecommendedAction } from '../decision/types.js';
-import type { BattleLogger } from '../logging/battleLogger.js';
 
 // Last-resort-only backstop (see queueNextBattle) -- normal matchmaking
 // waits routinely exceed this by a lot, so it must never be short enough to
@@ -37,8 +35,7 @@ export class AutoPlayer {
   constructor(
     private readonly conn: ShowdownConnection,
     private readonly manager: BattleManager,
-    private readonly repo: RandbatsRepository,
-    private readonly logger?: BattleLogger
+    private readonly repo: RandbatsRepository
   ) {
     manager.on('battle-start', (session: BattleSession) => {
       this.searching = false;
@@ -132,7 +129,6 @@ export class AutoPlayer {
 
     if (request.requestType === 'switch') {
       const forced = recommendForcedSwitch(session, this.repo);
-      if (forced) this.logForcedSwitch(session, forced);
       return this.switchChoiceFor(request.side.pokemon, forced?.action.label) ?? this.firstLegalSwitch(request.side.pokemon);
     }
 
@@ -176,24 +172,6 @@ export class AutoPlayer {
     }
     const idx = active.moves.findIndex((m) => !('disabled' in m && m.disabled));
     return idx >= 0 ? `move ${idx + 1}` : 'move 1';
-  }
-
-  /** recommendForcedSwitch has no AnalysisReport to piggyback on (your
-   * active just fainted, so analyzeBattle's "waiting" gate never produces
-   * report.active -- see recommendAction.ts's doc comment on
-   * recommendForcedSwitch) -- pull the opponent snapshot straight from the
-   * live session instead so this decision still lands in the log. */
-  private logForcedSwitch(session: BattleSession, forced: RecommendedAction): void {
-    const foeActive = session.foeSideObj?.active[0];
-    this.logger?.recordDecision(session.roomid, {
-      turn: session.battle.turn,
-      timestamp: Date.now(),
-      kind: 'forced-switch',
-      opponentActive: foeActive ? { species: foeActive.speciesForme, hpPercent: foeActive.hp && foeActive.maxhp ? Math.round((foeActive.hp / foeActive.maxhp) * 100) : 100, status: foeActive.status, candidateRoles: [] } : undefined,
-      verdict: forced.verdict,
-      chosen: forced.action,
-      alternatives: forced.alternatives,
-    });
   }
 
   private switchChoiceFor(pokemon: Protocol.Request.Pokemon[], label: string | undefined): string | undefined {

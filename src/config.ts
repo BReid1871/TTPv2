@@ -6,14 +6,6 @@ export const config = {
   port: Number(process.env.PORT ?? 3000),
   randbatsFormat: process.env.RANDBATS_FORMAT ?? 'gen9randombattle',
   randbatsRefreshMs: Number(process.env.RANDBATS_REFRESH_MS ?? 60 * 60 * 1000),
-  // Where each finished battle's raw protocol log + per-turn recommendation
-  // snapshot gets written -- see src/logging/battleLogger.ts. On Railway
-  // this needs a Volume mounted at this path or it's wiped on every restart.
-  battleLogDir: process.env.BATTLE_LOG_DIR ?? './battle-logs',
-  // If set, the /logs* dashboard routes require this exact value as
-  // ?token=... or an `Authorization: Bearer ...` header -- unset means
-  // those routes are open to anyone who can reach the public URL.
-  logsAccessToken: process.env.LOGS_ACCESS_TOKEN,
   // ANALYSIS_MODE=1 -> analysis mode (watch-only, never acts, current/legacy
   // behavior). ANALYSIS_MODE=0 -> automated mode (queues for and plays its
   // own Random Battles using the same recommendation engine). Defaults to
