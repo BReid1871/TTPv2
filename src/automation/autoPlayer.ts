@@ -18,6 +18,13 @@ const SEARCH_STALL_MS = 90_000;
 // search can lag a beat behind an unrelated push that arrives first.
 const SEARCH_CONFIRM_GRACE_MS = 3_000;
 
+/** True for Showdown's "you've been typing too quickly" reply to a message
+ * dropped by its per-connection flood limit -- sent as a |raw| line, not an
+ * |error|, so it needs its own check (see handleThrottled). */
+function isThrottleNotice(line: string): boolean {
+  return line.startsWith('|raw|') && line.includes('message-throttle-notice');
+}
+
 /**
  * Automated-mode-only: queues for its own Random Battles and plays them
  * out, turn by turn, using the exact same RecommendedAction the dashboard
@@ -32,6 +39,10 @@ export class AutoPlayer {
    * re-run of the debounced analysis pass on the same request doesn't
    * double-act. */
   private readonly actedOn = new Map<string, number>();
+  /** roomid -> the choice string last sent for that room's current rqid, so
+   * a throttle notice (see handleThrottled) can resend the same choice
+   * rather than needing a fresh analysis pass. */
+  private readonly lastChoice = new Map<string, string>();
 
   constructor(
     private readonly conn: ShowdownConnection,
@@ -50,6 +61,7 @@ export class AutoPlayer {
     });
     manager.on('battle-end', (session: BattleSession) => {
       this.actedOn.delete(session.roomid);
+      this.lastChoice.delete(session.roomid);
       this.queueNextBattle();
     });
     // The server's own confirmation of our search state -- the authoritative
@@ -57,6 +69,7 @@ export class AutoPlayer {
     conn.on('updatesearch', (state: SearchState) => this.handleSearchUpdate(state));
     conn.on('line', (roomid: string, line: string) => {
       if (line.startsWith('|error|')) this.handleError(roomid, line);
+      else if (isThrottleNotice(line)) this.handleThrottled(roomid);
     });
   }
 
@@ -123,7 +136,21 @@ export class AutoPlayer {
     if (!this.manager.sessions.has(roomid)) return;
     console.warn(`[auto] choice rejected in ${roomid}, using default: ${line}`);
     this.actedOn.delete(roomid);
+    this.lastChoice.set(roomid, 'default');
     this.conn.choose(roomid, 'default');
+  }
+
+  /** Showdown's per-connection flood limit silently drops an over-the-limit
+   * message and replies with this notice instead of an |error| -- so a
+   * throttled /choose previously went undetected: actedOn was already set,
+   * nothing else was going to re-trigger analysis for this room, and the
+   * battle just timed out. Resend the same choice we already decided on. */
+  private handleThrottled(roomid: string): void {
+    if (!this.manager.sessions.has(roomid)) return;
+    const choice = this.lastChoice.get(roomid);
+    if (!choice) return;
+    console.warn(`[auto] choice possibly throttled in ${roomid}, resending: ${choice}`);
+    this.conn.choose(roomid, choice);
   }
 
   /** Called after each debounced analysis pass (see index.ts) with the
@@ -137,6 +164,7 @@ export class AutoPlayer {
     const choice = this.resolveChoice(session, request, report);
     if (!choice) return;
     this.actedOn.set(session.roomid, request.rqid);
+    this.lastChoice.set(session.roomid, choice);
     this.conn.choose(session.roomid, choice);
   }
 
