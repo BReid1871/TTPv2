@@ -255,12 +255,15 @@ function evaluateTeraFlip(
   mySideObj: ClientSide,
   mySideId: 'p1' | 'p2',
   repo: RandbatsRepository,
-  isFaster: boolean
+  isFaster: boolean,
+  legalIds: Set<string> | undefined
 ): ActionEvaluation | undefined {
   const teraType = myActive.canTerastallize;
   if (!teraType) return undefined;
 
-  const attackMoveNames = matchup.yourMovesVsOpponent.filter((m) => m.confirmed).map((m) => m.name);
+  const attackMoveNames = matchup.yourMovesVsOpponent
+    .filter((m) => m.confirmed && (!legalIds || legalIds.has(toID(m.name))))
+    .map((m) => m.name);
   if (attackMoveNames.length === 0) return undefined;
 
   const requestInfo = getRequestInfo(session.battle, mySideObj);
@@ -469,7 +472,7 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
   // --- Nothing favorable found -- the opponent holds the available-turns
   // advantage no matter what we do. Last check before giving up: would
   // Terastallizing flip that race? Only taken if it actually does. ---
-  const teraFlip = evaluateTeraFlip(matchup, myActive, foeActive, session, mySideObj, mySideId, repo, isFaster);
+  const teraFlip = evaluateTeraFlip(matchup, myActive, foeActive, session, mySideObj, mySideId, repo, isFaster, legalIds);
   if (teraFlip) {
     return { action: teraFlip, verdict: 'favorable', alternatives: candidates };
   }

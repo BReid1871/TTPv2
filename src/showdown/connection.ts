@@ -27,6 +27,7 @@ export class ShowdownConnection extends EventEmitter {
   private closedByUser = false;
   private readonly sendQueue: string[] = [];
   private draining = false;
+  private lastSendAt = 0;
   loggedIn = false;
 
   connect(): void {
@@ -78,8 +79,16 @@ export class ShowdownConnection extends EventEmitter {
         this.draining = false;
         return;
       }
-      if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(line);
-      setTimeout(step, SEND_INTERVAL_MS).unref?.();
+      // Pace off the last actual send, not off the queue's own state -- a
+      // queue that drained empty between two send() calls must not let the
+      // next one fire immediately, or bursts spaced just under
+      // SEND_INTERVAL_MS still collide with Showdown's flood limit.
+      const wait = Math.max(0, SEND_INTERVAL_MS - (Date.now() - this.lastSendAt));
+      setTimeout(() => {
+        this.lastSendAt = Date.now();
+        if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(line);
+        step();
+      }, wait).unref?.();
     };
     step();
   }
