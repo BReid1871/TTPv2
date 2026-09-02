@@ -8,6 +8,14 @@ export interface SearchState {
   games: Record<string, string>;
 }
 
+// Showdown enforces a per-connection flood limit and silently drops (with a
+// "you've been typing too quickly" notice, not an |error|) any message sent
+// faster than that. With several concurrent battles all issuing /choose,
+// /timer on, and /search independently as soon as each one's analysis pass
+// finishes, unpaced sends on this one shared socket collide with that limit
+// -- pacing every outbound line through this interval keeps us under it.
+const SEND_INTERVAL_MS = 600;
+
 /**
  * Low-level connection to a Pokemon Showdown server: handles the websocket
  * transport, the challstr login handshake, and reconnection. Emits raw
@@ -17,6 +25,8 @@ export class ShowdownConnection extends EventEmitter {
   private ws?: WebSocket;
   private reconnectAttempt = 0;
   private closedByUser = false;
+  private readonly sendQueue: string[] = [];
+  private draining = false;
   loggedIn = false;
 
   connect(): void {
@@ -47,12 +57,31 @@ export class ShowdownConnection extends EventEmitter {
 
   close(): void {
     this.closedByUser = true;
+    this.sendQueue.length = 0;
     this.ws?.close();
   }
 
+  /** Queues a line for send, paced at SEND_INTERVAL_MS so bursts of /choose,
+   * /timer on, and /search across concurrent battles never trip Showdown's
+   * per-connection flood limit (see SEND_INTERVAL_MS). */
   send(line: string): void {
-    if (this.ws?.readyState !== WebSocket.OPEN) return;
-    this.ws.send(line);
+    this.sendQueue.push(line);
+    this.drainSendQueue();
+  }
+
+  private drainSendQueue(): void {
+    if (this.draining) return;
+    this.draining = true;
+    const step = () => {
+      const line = this.sendQueue.shift();
+      if (line === undefined) {
+        this.draining = false;
+        return;
+      }
+      if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(line);
+      setTimeout(step, SEND_INTERVAL_MS).unref?.();
+    };
+    step();
   }
 
   joinRoom(roomid: string): void {
