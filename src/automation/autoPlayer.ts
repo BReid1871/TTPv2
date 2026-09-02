@@ -192,6 +192,13 @@ export class AutoPlayer {
       if (action?.kind === 'switch') {
         const choice = this.switchChoiceFor(request.side.pokemon, action.label);
         if (choice) return choice;
+      } else if (action?.kind === 'tera') {
+        // label is a display string ("Terastallize (Type) + MoveName") for
+        // this kind, not a plain move name -- teraMoveName carries the
+        // actual move to send. Only append the flag if Tera is still legal
+        // by the time we act (a prior request could've already used it).
+        const choice = action.teraMoveName && this.moveChoiceFor(active, action.teraMoveName);
+        if (choice) return active.canTerastallize ? `${choice} terastallize` : choice;
       } else if (action) {
         const choice = this.moveChoiceFor(active, action.label);
         if (choice) return choice;

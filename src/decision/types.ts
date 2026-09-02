@@ -12,6 +12,11 @@ export interface ActionEvaluation {
   favorable: boolean;
   /** true for boost-kind actions -- tie-break preference toward setup on an otherwise-equal race */
   persistentBoost: boolean;
+  /** kind 'tera' only -- the actual move to send alongside the terastallize
+   * flag. label is a display string ("Terastallize (Type) + MoveName") for
+   * this kind rather than a plain move name, so execution needs this
+   * instead of parsing label. */
+  teraMoveName?: string;
   /** move accuracy, 0-100 (100 for always-hit moves and non-move actions like switching) --
    * tie-break toward the more reliable move when two attacks land on the same N-hit-KO */
   accuracy: number;

@@ -285,6 +285,7 @@ function evaluateTeraFlip(
     favorable: true,
     persistentBoost: false,
     accuracy: moveAccuracy(best.name),
+    teraMoveName: best.name,
   };
 }
 
