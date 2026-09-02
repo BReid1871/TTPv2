@@ -156,10 +156,19 @@ function renderRecommendedAction(rec, title) {
   `;
 }
 
-function renderReport(report, appEl) {
+// A saved battle's play-by-play for one turn -- moves used, damage, status,
+// switches, faints, weather/hazard ticks -- formatted server-side via
+// @pkmn/view's LogFormatter from this account's own perspective (see
+// battleSession.ts). Absent/empty for the live dashboard, which has no
+// equivalent buffering and isn't this feature's target -- see replay.js.
+function renderEventLog(events) {
+  if (!events || events.length === 0) return '';
+  return `<div class="card"><h2 class="card-title">What happened</h2><ul class="event-list">${events.map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div>`;
+}
+
+function renderReport(report) {
   if (report.waiting) {
-    appEl.innerHTML = `<p id="empty-state">${esc(report.waitingReason || 'Waiting for battle data...')}</p>`;
-    return;
+    return `<p id="empty-state">${esc(report.waitingReason || 'Waiting for battle data...')}</p>`;
   }
 
   let html = '';
@@ -192,35 +201,39 @@ function renderReport(report, appEl) {
     html += `</div>`;
   }
 
-  appEl.innerHTML = html;
+  return html;
 }
 
-// Renders one src/logging/battleLogger.ts ReplayTurn -- a saved report
-// (the normal per-turn case), a forced-switch-after-faint recommendation
-// with no full matchup report (recommendForcedSwitch has no report.active
-// to attach to -- see recommendAction.ts), or occasionally both when a
-// faint and a fresh analysis pass landed on the same turn number.
+// Renders one src/logging/battleLogger.ts ReplayTurn -- the turn's play-by-
+// play (events, via renderEventLog) followed by a saved report (the normal
+// per-turn case), a forced-switch-after-faint recommendation with no full
+// matchup report (recommendForcedSwitch has no report.active to attach to --
+// see recommendAction.ts), or occasionally both when a faint and a fresh
+// analysis pass landed on the same turn number.
 function renderReplayTurn(replayTurn, appEl) {
   if (!replayTurn) {
     appEl.innerHTML = `<p id="empty-state">No advisor data for this turn.</p>`;
     return;
   }
 
+  const eventsHtml = renderEventLog(replayTurn.events);
+
   if (replayTurn.report) {
-    renderReport(replayTurn.report, appEl);
+    let html = eventsHtml + renderReport(replayTurn.report);
     if (replayTurn.forcedSwitch) {
-      appEl.innerHTML += `<div class="card"><h2 class="card-title">Forced switch (after faint)</h2>${renderRecommendedAction(replayTurn.forcedSwitch, 'Chosen switch')}</div>`;
+      html += `<div class="card"><h2 class="card-title">Forced switch (after faint)</h2>${renderRecommendedAction(replayTurn.forcedSwitch, 'Chosen switch')}</div>`;
     }
+    appEl.innerHTML = html;
     return;
   }
 
   if (replayTurn.forcedSwitch) {
-    appEl.innerHTML = `<div class="card">
+    appEl.innerHTML = `${eventsHtml}<div class="card">
       <h2 class="card-title">Turn ${replayTurn.turn} &middot; forced switch (after faint)</h2>
       ${renderRecommendedAction(replayTurn.forcedSwitch, 'Chosen switch')}
     </div>`;
     return;
   }
 
-  appEl.innerHTML = `<p id="empty-state">No advisor data for this turn.</p>`;
+  appEl.innerHTML = eventsHtml || `<p id="empty-state">No advisor data for this turn.</p>`;
 }

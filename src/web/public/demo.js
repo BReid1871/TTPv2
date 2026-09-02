@@ -75,7 +75,7 @@ function renderTurnControl() {
 function renderSelected() {
   const turns = turnsForRoom(state.selectedRoom);
   const report = turns ? turns[state.turnIndex] : state.reports.get(state.selectedRoom);
-  renderReport(report, appEl);
+  appEl.innerHTML = renderReport(report);
 }
 
 renderTabs();

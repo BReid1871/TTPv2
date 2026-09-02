@@ -18,6 +18,11 @@ export interface ReplayTurn {
    * has no report.active for that case (see recommendAction.ts), so it's
    * recorded separately rather than folded into `report`. */
   forcedSwitch?: RecommendedAction;
+  /** human-readable play-by-play for this turn (moves used, damage, status,
+   * switches, faints, weather/hazard ticks, ...) -- see BattleSession's
+   * LogFormatter and the 'narration' listener in index.ts. Always present
+   * (possibly empty) so replay.js doesn't need to special-case its absence. */
+  events: string[];
 }
 
 export interface BattleLogSummary {
@@ -33,10 +38,17 @@ export interface BattleLogSummary {
   result: 'win' | 'loss' | 'tie' | 'unknown';
 }
 
+// `events` is assembled separately (from eventsByTurn) only once, when
+// finishBattle flattens everything into the final ReplayTurn[] -- keeping it
+// out of the live per-turn record avoids needing a placeholder value here
+// that finishBattle would just overwrite anyway.
+type LiveTurn = Omit<ReplayTurn, 'events'>;
+
 interface LiveBattle {
   startedAt: number;
   lines: string[];
-  turnsByNumber: Map<number, ReplayTurn>;
+  turnsByNumber: Map<number, LiveTurn>;
+  eventsByTurn: Map<number, string[]>;
 }
 
 const PLAYER_LINE = /^\|player\|(p[12])\|([^|]*)\|/;
@@ -71,11 +83,22 @@ export class BattleLogger {
   }
 
   startBattle(roomid: string): void {
-    this.live.set(roomid, { startedAt: Date.now(), lines: [], turnsByNumber: new Map() });
+    this.live.set(roomid, { startedAt: Date.now(), lines: [], turnsByNumber: new Map(), eventsByTurn: new Map() });
   }
 
   recordLine(roomid: string, line: string): void {
     this.live.get(roomid)?.lines.push(line);
+  }
+
+  /** One line of human-readable play-by-play (see BattleSession's
+   * LogFormatter) for the given turn -- appended, since a turn accumulates
+   * several of these (each side's move, damage, status ticks, faints, ...). */
+  recordNarration(roomid: string, turn: number, text: string): void {
+    const live = this.live.get(roomid);
+    if (!live) return;
+    const arr = live.eventsByTurn.get(turn);
+    if (arr) arr.push(text);
+    else live.eventsByTurn.set(turn, [text]);
   }
 
   /** Keyed by turn: a later analysis pass on the same turn (mid-turn
@@ -137,7 +160,23 @@ export class BattleLogger {
       result,
     };
 
-    const turns = [...live.turnsByNumber.values()].sort((a, b) => a.turn - b.turn);
+    // Union of both maps' keys: a turn can have narration with no logged
+    // report (e.g. the fainting turn itself, when recommendForcedSwitch's
+    // reply lands on the *next* turn number -- see recordForcedSwitch's
+    // caller in autoPlayer.ts) or vice versa.
+    const turnNumbers = new Set<number>([...live.turnsByNumber.keys(), ...live.eventsByTurn.keys()]);
+    const turns: ReplayTurn[] = [...turnNumbers]
+      .sort((a, b) => a - b)
+      .map((turn) => {
+        const existing = live.turnsByNumber.get(turn);
+        return {
+          turn,
+          timestamp: existing?.timestamp ?? Date.now(),
+          report: existing?.report,
+          forcedSwitch: existing?.forcedSwitch,
+          events: live.eventsByTurn.get(turn) ?? [],
+        };
+      });
 
     fs.writeFileSync(path.join(folder, 'battle.log'), live.lines.join('\n'), 'utf8');
     fs.writeFileSync(path.join(folder, 'reports.json'), JSON.stringify(turns, null, 2), 'utf8');

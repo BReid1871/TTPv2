@@ -38,7 +38,7 @@ function connect() {
       state.reports.set(msg.report.roomid, msg.report);
       if (!state.selectedRoom) state.selectedRoom = msg.report.roomid;
       renderTabs();
-      if (msg.report.roomid === state.selectedRoom) renderReport(msg.report, appEl);
+      if (msg.report.roomid === state.selectedRoom) appEl.innerHTML = renderReport(msg.report);
     } else if (msg.type === 'remove') {
       state.reports.delete(msg.roomid);
       state.rooms = state.rooms.filter((r) => r.roomid !== msg.roomid);
@@ -73,7 +73,7 @@ function renderTabs() {
 
 function renderSelected() {
   const report = state.selectedRoom ? state.reports.get(state.selectedRoom) : undefined;
-  if (report) renderReport(report, appEl);
+  if (report) appEl.innerHTML = renderReport(report);
   else appEl.innerHTML = '<p id="empty-state">Waiting for a battle... start or join a Random Battle on Pokemon Showdown and it\'ll show up here automatically.</p>';
 }
 

@@ -64,9 +64,12 @@ spectator. It never sends any battle commands itself.
 
 Every finished battle is saved to a folder under `BATTLE_LOG_DIR`
 (`./battle-logs` by default): the raw protocol log, a `meta.json` summary,
-and a `reports.json` with the exact per-turn recommendation + matchup
-breakdown the dashboard showed live at the time (including forced switches
-after a faint, which run outside the normal analysis pass).
+and a `reports.json` with, for every turn, the exact recommendation +
+matchup breakdown the dashboard showed live at the time (including forced
+switches after a faint, which run outside the normal analysis pass) *and*
+a plain-English play-by-play of what actually happened that turn (moves
+used, damage, status, switches, faints, weather/hazard ticks, ...) via
+[`@pkmn/view`](https://github.com/pkmn/ps)'s `LogFormatter`.
 
 - `/logs` — battle history: one row per saved battle (opponent, result,
   format, turn count, duration) with links to watch the replay, download a
@@ -76,8 +79,8 @@ after a faint, which run outside the normal analysis pass).
   **Next turn ▶** to move one turn at a time, **▶ Play** to autoplay
   through the whole battle (click again, or **⏸ Pause**, to stop), a
   slider to jump straight to a turn, and left/right arrow keys / spacebar
-  as shortcuts. Each turn shows exactly what the advisor recommended and
-  why, same as it appeared live.
+  as shortcuts. Each turn shows a "What happened" play-by-play followed by
+  exactly what the advisor recommended and why, same as it appeared live.
 
 Set `LOGS_ACCESS_TOKEN` if the dashboard is reachable from a public URL
 (e.g. deployed on Railway) — without it, `/logs` and `/replay.html` are

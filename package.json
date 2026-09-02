@@ -18,6 +18,7 @@
     "@pkmn/login": "^0.2.0",
     "@pkmn/protocol": "^0.7.3",
     "@pkmn/sets": "^5.2.0",
+    "@pkmn/view": "^0.7.3",
     "@smogon/calc": "^0.11.0",
     "archiver": "^8.0.0",
     "express": "^5.2.1",

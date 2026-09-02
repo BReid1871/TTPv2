@@ -189,3 +189,6 @@ details.bench-item summary { cursor: pointer; font-size: 13px; padding: 6px 4px;
 details.bench-item summary .mon-sub { margin-left: 8px; }
 
 h2.card-title { font-size: 14px; margin: 0 0 10px; color: var(--text); }
+
+.event-list { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; }
+.event-list li { margin-bottom: 2px; }

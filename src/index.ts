@@ -71,6 +71,7 @@ async function main() {
     console.log(`[battle] started: ${session.roomid}`);
     logger.startBattle(session.roomid);
     session.on('update', (line: string) => logger.recordLine(session.roomid, line));
+    session.on('narration', (text: string) => logger.recordNarration(session.roomid, session.battle.turn, text));
     updateRooms();
     scheduleAnalysis(session);
   });
