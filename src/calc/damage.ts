@@ -1,9 +1,30 @@
 import { Generations, Pokemon as CalcPokemon, Move as CalcMove, Field as CalcField, Side as CalcSide, calculate } from '@smogon/calc';
 import type { Battle, Side as ClientSide } from '@pkmn/client';
-import { toID } from '@pkmn/data';
+import { Generations as DataGenerations, toID } from '@pkmn/data';
+import { Dex } from '@pkmn/dex';
 import { DEFAULT_EVS, DEFAULT_IVS, type StatsTable } from '../randbats/setTracker.js';
 
 export const calcGen = Generations.get(9);
+
+// @smogon/calc's own species dex doesn't carry purely-cosmetic formes at all
+// (Vivillon's wing patterns, Florges' colors, Gastrodon-East, Alcremie's
+// flavors, ...) -- confirmed in production: `new CalcPokemon(calcGen,
+// 'Vivillon-High Plains', ...)` throws deep inside @smogon/calc's own
+// constructor (reading `.hp` off an undefined species), which took down the
+// whole analysis pass -- and with it every future one for the rest of the
+// battle, since one of these sitting untouched on your own bench hits this
+// on every single turn -- if the pokemon was never even sent out. A cosmetic
+// forme is mechanically identical to its base species (same stats/types/
+// abilities), so substituting the base species name is exact, not an
+// approximation; a mechanically distinct forme (Minior-Meteor, Basculin-
+// White-Striped, ...) already has its own entry in @smogon/calc's dex and
+// never reaches the fallback.
+const speciesDataGen = new DataGenerations(Dex).get(9);
+function resolveCalcSpeciesName(name: string): string {
+  if (calcGen.species.get(toID(name))) return name;
+  const base = speciesDataGen.species.get(name)?.baseSpecies;
+  return base && calcGen.species.get(toID(base)) ? base : name;
+}
 
 export interface KnownSetInput {
   speciesForme: string;
@@ -50,7 +71,7 @@ function isParadoxAbility(abilityId: string): boolean {
 }
 
 export function buildKnownPokemon(name: string, set: KnownSetInput): CalcPokemon {
-  const p = new CalcPokemon(calcGen, name, {
+  const p = new CalcPokemon(calcGen, resolveCalcSpeciesName(name), {
     level: set.level,
     ability: set.ability || undefined,
     item: set.item || undefined,
@@ -78,7 +99,7 @@ export function buildKnownPokemon(name: string, set: KnownSetInput): CalcPokemon
 }
 
 export function buildCandidatePokemon(name: string, set: CandidateSetInput): CalcPokemon {
-  const p = new CalcPokemon(calcGen, name, {
+  const p = new CalcPokemon(calcGen, resolveCalcSpeciesName(name), {
     level: set.level,
     ability: set.ability || undefined,
     item: set.item || undefined,
