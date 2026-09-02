@@ -7,6 +7,7 @@ import type { BattleSession } from '../battle/battleSession.js';
 import type { RandbatsRepository } from '../randbats/data.js';
 import { recommendForcedSwitch } from '../decision/recommendAction.js';
 import type { AnalysisReport } from '../analysis/types.js';
+import type { BattleLogger } from '../logging/battleLogger.js';
 
 // Last-resort-only backstop (see queueNextBattle) -- normal matchmaking
 // waits routinely exceed this by a lot, so it must never be short enough to
@@ -35,7 +36,8 @@ export class AutoPlayer {
   constructor(
     private readonly conn: ShowdownConnection,
     private readonly manager: BattleManager,
-    private readonly repo: RandbatsRepository
+    private readonly repo: RandbatsRepository,
+    private readonly logger?: BattleLogger
   ) {
     manager.on('battle-start', (session: BattleSession) => {
       this.searching = false;
@@ -147,6 +149,7 @@ export class AutoPlayer {
 
     if (request.requestType === 'switch') {
       const forced = recommendForcedSwitch(session, this.repo);
+      if (forced) this.logger?.recordForcedSwitch(session.roomid, session.battle.turn, forced);
       return this.switchChoiceFor(request.side.pokemon, forced?.action.label) ?? this.firstLegalSwitch(request.side.pokemon);
     }
 

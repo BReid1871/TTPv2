@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Battle replay</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="top-bar">
+  <h1>Battle replay</h1>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <a href="/logs" style="color:var(--muted);font-size:12px;">&larr; back to battle history</a>
+  </div>
+</header>
+
+<div id="replay-meta"></div>
+
+<div id="turn-control"></div>
+
+<main id="app">
+  <p id="empty-state">Loading replay...</p>
+</main>
+
+<script src="render.js"></script>
+<script src="replay.js"></script>
+</body>
+</html>

@@ -55,6 +55,33 @@ spectator. It never sends any battle commands itself.
   their most probable candidate sets when a detail isn't confirmed yet.
 - `src/web/` — a tiny Express + `ws` server that pushes each new
   `AnalysisReport` to a live browser dashboard (`src/web/public/`).
+- `src/logging/battleLogger.ts` — saves every finished battle to disk (raw
+  protocol log + the per-turn `AnalysisReport` the dashboard showed live),
+  which `/logs` and `/replay.html` (see below) read back to let you rewatch
+  a battle turn by turn with the advisor's reasoning attached.
+
+## Battle history & replays
+
+Every finished battle is saved to a folder under `BATTLE_LOG_DIR`
+(`./battle-logs` by default): the raw protocol log, a `meta.json` summary,
+and a `reports.json` with the exact per-turn recommendation + matchup
+breakdown the dashboard showed live at the time (including forced switches
+after a faint, which run outside the normal analysis pass).
+
+- `/logs` — battle history: one row per saved battle (opponent, result,
+  format, turn count, duration) with links to watch the replay, download a
+  zip, or grab the raw files.
+- `/replay.html?id=<battle id>` — steps through a saved battle turn by
+  turn using the same rendering as the live dashboard: **◀ Prev turn** /
+  **Next turn ▶** to move one turn at a time, **▶ Play** to autoplay
+  through the whole battle (click again, or **⏸ Pause**, to stop), a
+  slider to jump straight to a turn, and left/right arrow keys / spacebar
+  as shortcuts. Each turn shows exactly what the advisor recommended and
+  why, same as it appeared live.
+
+Set `LOGS_ACCESS_TOKEN` if the dashboard is reachable from a public URL
+(e.g. deployed on Railway) — without it, `/logs` and `/replay.html` are
+open to anyone who can reach that URL.
 
 ## Environment variables
 
@@ -68,6 +95,8 @@ spectator. It never sends any battle commands itself.
 | `RANDBATS_FORMAT` | no | Which random-battle format's set data to load (default `gen9randombattle`). |
 | `RANDBATS_REFRESH_MS` | no | How often to refresh the randbats set data (default 1 hour). |
 | `MAX_CONCURRENT_BATTLES` | no | Automated mode only: how many battles to play at once (default `1`). |
+| `BATTLE_LOG_DIR` | no | Where finished battles are saved for `/logs` and `/replay.html` (default `./battle-logs`). Needs a persistent volume on Railway or it's wiped on every restart. |
+| `LOGS_ACCESS_TOKEN` | no | If set, `/logs` and `/replay.html` require this value as `?token=...` or an `Authorization: Bearer ...` header. |
 
 ## Running locally
 

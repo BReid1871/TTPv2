@@ -13,6 +13,14 @@ export const config = {
   // N searches at once -- it ramps up to N concurrent battles by
   // re-searching immediately after each one lands, capped at this number.
   maxConcurrentBattles: Math.max(1, Number(process.env.MAX_CONCURRENT_BATTLES ?? 1)),
+  // Where each finished battle's raw protocol log + per-turn report
+  // snapshot gets written -- see src/logging/battleLogger.ts. On Railway
+  // this needs a Volume mounted at this path or it's wiped on every restart.
+  battleLogDir: process.env.BATTLE_LOG_DIR ?? './battle-logs',
+  // If set, the /logs* dashboard routes (including /replay.html) require
+  // this exact value as ?token=... or an `Authorization: Bearer ...` header
+  // -- unset means those routes are open to anyone who can reach the public URL.
+  logsAccessToken: process.env.LOGS_ACCESS_TOKEN,
   // ANALYSIS_MODE=1 -> analysis mode (watch-only, never acts, current/legacy
   // behavior). ANALYSIS_MODE=0 -> automated mode (queues for and plays its
   // own Random Battles using the same recommendation engine). Defaults to
