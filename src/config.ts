@@ -1,3 +1,17 @@
+export type Mode = 'analysis' | 'automated' | 'auto-accept';
+
+// MODE=analysis -> watch-only, never acts (the safe default).
+// MODE=automated -> queues for and plays its own Random Battles.
+// MODE=auto-accept -> never searches; accepts any incoming challenge and
+// plays it out with the same recommendation engine as automated mode.
+// Falls back to the older boolean ANALYSIS_MODE (1/unset = analysis, 0 =
+// automated) when MODE isn't set, so existing deployments keep working.
+function resolveMode(): Mode {
+  const raw = process.env.MODE?.trim().toLowerCase();
+  if (raw === 'analysis' || raw === 'automated' || raw === 'auto-accept') return raw;
+  return process.env.ANALYSIS_MODE === '0' ? 'automated' : 'analysis';
+}
+
 export const config = {
   username: requireEnv('SHOWDOWN_USERNAME'),
   password: requireEnv('SHOWDOWN_PASSWORD'),
@@ -7,11 +21,14 @@ export const config = {
   randbatsFormat: process.env.RANDBATS_FORMAT ?? 'gen9randombattle',
   randbatsRefreshMs: Number(process.env.RANDBATS_REFRESH_MS ?? 60 * 60 * 1000),
   // How many Random Battles AutoPlayer will play at once. Defaults to 1
-  // (the original, single-battle-at-a-time behavior). Showdown treats a
-  // second /search for a format you're already searching as *cancelling*
-  // the first rather than queueing a second ticket, so this doesn't burst
-  // N searches at once -- it ramps up to N concurrent battles by
-  // re-searching immediately after each one lands, capped at this number.
+  // (the original, single-battle-at-a-time behavior). In automated mode,
+  // Showdown treats a second /search for a format you're already searching
+  // as *cancelling* the first rather than queueing a second ticket, so this
+  // doesn't burst N searches at once -- it ramps up to N concurrent battles
+  // by re-searching immediately after each one lands, capped at this number.
+  // In auto-accept mode, this instead caps how many incoming challenges get
+  // accepted at once -- one arriving past the cap is held and accepted once
+  // a slot frees up (see AutoPlayer.drainPendingChallenges).
   maxConcurrentBattles: Math.max(1, Number(process.env.MAX_CONCURRENT_BATTLES ?? 1)),
   // Where each finished battle's raw protocol log + per-turn report
   // snapshot gets written -- see src/logging/battleLogger.ts. On Railway
@@ -21,11 +38,7 @@ export const config = {
   // this exact value as ?token=... or an `Authorization: Bearer ...` header
   // -- unset means those routes are open to anyone who can reach the public URL.
   logsAccessToken: process.env.LOGS_ACCESS_TOKEN,
-  // ANALYSIS_MODE=1 -> analysis mode (watch-only, never acts, current/legacy
-  // behavior). ANALYSIS_MODE=0 -> automated mode (queues for and plays its
-  // own Random Battles using the same recommendation engine). Defaults to
-  // analysis mode (the safe, non-acting choice) if unset or unrecognized.
-  analysisMode: process.env.ANALYSIS_MODE !== '0',
+  mode: resolveMode(),
 };
 
 function requireEnv(name: string): string {

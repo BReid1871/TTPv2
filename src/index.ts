@@ -24,11 +24,17 @@ async function main() {
   const conn = new ShowdownConnection();
   const watcher = new RoomWatcher(conn);
   const manager = new BattleManager(conn, watcher);
-  // Analysis mode (default/legacy): watch-only, never sends battle commands.
-  // Automated mode (ANALYSIS_MODE=0): queues for and plays its own matches,
-  // one after another, using the same recommendations below.
-  const autoPlayer = config.analysisMode ? undefined : new AutoPlayer(conn, manager, repo, logger);
-  console.log(`[mode] ${config.analysisMode ? 'analysis (watch-only)' : 'automated (plays its own matches)'}`);
+  // analysis (default/legacy): watch-only, never sends battle commands.
+  // automated: queues for and plays its own matches, one after another.
+  // auto-accept: never searches -- accepts any incoming challenge instead.
+  // automated/auto-accept both play using the same recommendations below.
+  const autoPlayer = config.mode === 'analysis' ? undefined : new AutoPlayer(conn, manager, repo, config.mode, logger);
+  const MODE_LABEL = {
+    analysis: 'analysis (watch-only)',
+    automated: 'automated (plays its own matches)',
+    'auto-accept': 'auto-accept (accepts incoming challenges, never searches)',
+  } as const;
+  console.log(`[mode] ${MODE_LABEL[config.mode]}`);
 
   const pendingAnalysis = new Map<string, NodeJS.Timeout>();
 

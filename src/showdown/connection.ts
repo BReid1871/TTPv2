@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 import { Actions } from '@pkmn/login';
+import { toID } from '@pkmn/data';
 import { config } from '../config.js';
 
 export interface SearchState {
@@ -106,6 +107,11 @@ export class ShowdownConnection extends EventEmitter {
     this.send(`|/search ${format}`);
   }
 
+  /** Accepts a pending incoming challenge from `user` (auto-accept mode only). */
+  acceptChallenge(user: string): void {
+    this.send(`|/accept ${user}`);
+  }
+
   /** Sends a `/choose` decision for a specific battle room (automated mode only). */
   choose(roomid: string, choice: string): void {
     this.send(`${roomid}|/choose ${choice}`);
@@ -156,6 +162,22 @@ export class ShowdownConnection extends EventEmitter {
       if (named) {
         this.loggedIn = true;
         this.emit('loggedin');
+      }
+      return;
+    }
+    if (line.startsWith('|pm|')) {
+      // A challenge arrives as a PM from the challenger whose message body is
+      // literally "/challenge FORMAT" (optionally followed by a packed team
+      // in a later pipe-delimited field, which we don't need) -- not its own
+      // dedicated protocol line. Only fires for a PM addressed to us and not
+      // sent by us, so our own outgoing /challenge (if we ever sent one)
+      // doesn't loop back as an incoming one.
+      const parts = line.split('|');
+      const from = parts[2];
+      const to = parts[3];
+      const message = parts[4] ?? '';
+      if (from && to && toID(to) === toID(config.username) && toID(from) !== toID(config.username) && message.startsWith('/challenge ')) {
+        this.emit('challenge', from, message.slice('/challenge '.length).trim());
       }
       return;
     }

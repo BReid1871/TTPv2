@@ -1,6 +1,6 @@
 import { toID } from '@pkmn/data';
 import type { Protocol } from '@pkmn/protocol';
-import { config } from '../config.js';
+import { config, type Mode } from '../config.js';
 import type { ShowdownConnection, SearchState } from '../showdown/connection.js';
 import type { BattleManager } from '../showdown/battleManager.js';
 import type { BattleSession } from '../battle/battleSession.js';
@@ -26,15 +26,23 @@ function isThrottleNotice(line: string): boolean {
 }
 
 /**
- * Automated-mode-only: queues for its own Random Battles and plays them
- * out, turn by turn, using the exact same RecommendedAction the dashboard
- * shows in analysis mode -- see index.ts, which only constructs this class
- * when ANALYSIS_MODE says to. Nothing here runs, and nothing here is
- * imported, on the analysis-mode path.
+ * Non-analysis-mode-only: plays out battles turn by turn using the exact
+ * same RecommendedAction the dashboard shows in analysis mode -- see
+ * index.ts, which only constructs this class when MODE says to. Nothing
+ * here runs, and nothing here is imported, on the analysis-mode path.
+ *
+ * Two mutually exclusive ways to get into a battle, gated by `mode`:
+ *  - 'automated': queues for its own Random Battles (queueNextBattle).
+ *  - 'auto-accept': never searches -- accepts any incoming challenge
+ *    instead (handleChallenge), up to maxConcurrentBattles at once.
  */
 export class AutoPlayer {
   private searching = false;
   private searchIssuedAt = 0;
+  /** auto-accept mode only: challengers accepted once a battle slot frees
+   * up, because we were already at maxConcurrentBattles when they
+   * challenged (see handleChallenge/drainPendingChallenges). */
+  private readonly pendingChallenges = new Set<string>();
   /** roomid -> rqid of the last request we already sent a /choose for, so a
    * re-run of the debounced analysis pass on the same request doesn't
    * double-act. */
@@ -48,6 +56,7 @@ export class AutoPlayer {
     private readonly conn: ShowdownConnection,
     private readonly manager: BattleManager,
     private readonly repo: RandbatsRepository,
+    private readonly mode: Extract<Mode, 'automated' | 'auto-accept'>,
     private readonly logger?: BattleLogger
   ) {
     manager.on('battle-start', (session: BattleSession) => {
@@ -57,25 +66,55 @@ export class AutoPlayer {
       this.conn.timerOn(session.roomid);
       // With maxConcurrentBattles > 1, don't wait for this battle to end --
       // immediately try to fill any remaining concurrency slots too.
-      this.queueNextBattle();
+      if (this.mode === 'automated') this.queueNextBattle();
     });
     manager.on('battle-end', (session: BattleSession) => {
       this.actedOn.delete(session.roomid);
       this.lastChoice.delete(session.roomid);
-      this.queueNextBattle();
+      if (this.mode === 'automated') this.queueNextBattle();
+      else this.drainPendingChallenges();
     });
     // The server's own confirmation of our search state -- the authoritative
     // signal for whether we're actually still queued (see handleSearchUpdate).
+    // A harmless no-op in auto-accept mode, since `searching` never goes
+    // true there (nothing ever calls queueNextBattle).
     conn.on('updatesearch', (state: SearchState) => this.handleSearchUpdate(state));
     conn.on('line', (roomid: string, line: string) => {
       if (line.startsWith('|error|')) this.handleError(roomid, line);
       else if (isThrottleNotice(line)) this.handleThrottled(roomid);
     });
+    if (this.mode === 'auto-accept') {
+      conn.on('challenge', (from: string) => this.handleChallenge(from));
+    }
   }
 
-  /** Call once after logging in to kick off the first search. */
+  /** Call once after logging in to kick off the first search (automated
+   * mode) -- a no-op in auto-accept mode, which just waits for challenges. */
   start(): void {
-    this.queueNextBattle();
+    if (this.mode === 'automated') this.queueNextBattle();
+  }
+
+  /** A challenge PM arrived (see connection.ts's |pm| handling). Accept it
+   * immediately if there's room under maxConcurrentBattles, otherwise hold
+   * it and retry once a battle ends (drainPendingChallenges) -- Showdown
+   * challenges do eventually expire on their own if never accepted, so this
+   * is best-effort, not a guarantee the challenger is still there by then. */
+  private handleChallenge(from: string): void {
+    if (this.manager.sessions.size >= config.maxConcurrentBattles) {
+      this.pendingChallenges.add(from);
+      return;
+    }
+    console.log(`[auto-accept] accepting challenge from ${from}`);
+    this.conn.acceptChallenge(from);
+  }
+
+  private drainPendingChallenges(): void {
+    for (const from of this.pendingChallenges) {
+      if (this.manager.sessions.size >= config.maxConcurrentBattles) return;
+      this.pendingChallenges.delete(from);
+      console.log(`[auto-accept] accepting queued challenge from ${from}`);
+      this.conn.acceptChallenge(from);
+    }
   }
 
   /** Only ever one outstanding /search at a time -- Showdown treats a second
