@@ -9,7 +9,10 @@
 <body>
 <header id="top-bar">
   <h1>Showdown Random Battle Analyzer</h1>
-  <div id="conn-status" class="pill disconnected">connecting...</div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <a href="/logs" style="color:var(--muted);font-size:12px;">battle history &amp; replays</a>
+    <div id="conn-status" class="pill disconnected">connecting...</div>
+  </div>
 </header>
 
 <nav id="room-tabs"></nav>
@@ -18,6 +21,7 @@
   <p id="empty-state">Waiting for a battle... start or join a Random Battle on Pokemon Showdown and it'll show up here automatically.</p>
 </main>
 
+<script src="render.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
