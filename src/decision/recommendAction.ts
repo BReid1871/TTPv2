@@ -109,6 +109,59 @@ function moveAccuracy(moveName: string): number {
   return acc === true || acc === undefined ? 100 : acc;
 }
 
+/** What's actually selectable on the pending |request| for `myActive`, if
+ * any -- a Choice item, Encore, Disable, Taunt, Torment, or 0 PP all surface
+ * here as `disabled: true` on the affected move slot(s) (the server always
+ * knows definitively for your own side, unlike the opponent's `maybeDisabled`
+ * uncertainty). `legalIds` stays undefined when there's no move request to
+ * check against (nothing to filter on, matching prior no-filter behavior).
+ * `trapped` is the separate "can't switch away either" case -- an active
+ * Mean Look/Block/Spider Web, or a trapping ability like Shadow Tag/Arena
+ * Trap; a plain Choice lock or Encore doesn't trap you, switching is still
+ * always legal and resets it. */
+function getLegalMoveContext(session: BattleSession): { legalIds: Set<string> | undefined; trapped: boolean } {
+  const request = session.battle.request;
+  if (!request || request.requestType !== 'move') return { legalIds: undefined, trapped: false };
+  const active = request.active[0];
+  if (!active) return { legalIds: undefined, trapped: false };
+  const legalIds = new Set(active.moves.filter((m) => !('disabled' in m && m.disabled)).map((m) => m.id));
+  return { legalIds, trapped: active.trapped === true };
+}
+
+/** Struggle isn't part of any Pokemon's real moveset, so it never shows up in
+ * matchup.yourMovesVsOpponent -- built the same way evaluateTeraFlip builds
+ * its own damage number, just aimed at the fixed 'Struggle' move name. Called
+ * only when the pending request's only legal "move" is literally Struggle
+ * (see getLegalMoveContext) -- i.e. every real move is out of PP. */
+function evaluateStruggle(
+  myActive: ClientPokemon,
+  foeActive: ClientPokemon,
+  session: BattleSession,
+  mySideObj: ClientSide,
+  mySideId: 'p1' | 'p2',
+  repo: RandbatsRepository,
+  opponentHpPercent: number,
+  myAvailableTurns: number,
+  isFaster: boolean
+): ActionEvaluation {
+  const requestInfo = getRequestInfo(session.battle, mySideObj);
+  const yourCalc = buildYourCalcPokemon(myActive, requestInfo.get(myActive));
+  const opponentScenarios = buildOpponentScenarios(foeActive, repo, session.damageEvidence.getEvidence(foeActive.speciesForme));
+  const field = buildField(session.battle, mySideId);
+  const best = bestFloorMove(yourCalc, opponentScenarios, ['Struggle'], field);
+  const directDamage = best?.percent ?? 0;
+  const theirTurns = proposedOpponentTurns(opponentHpPercent, directDamage, directDamage);
+  return {
+    kind: 'attack',
+    label: 'Struggle',
+    myAvailableTurns,
+    opponentProposedAvailableTurns: theirTurns,
+    favorable: isFavorable(myAvailableTurns, theirTurns, isFaster),
+    persistentBoost: false,
+    accuracy: 100,
+  };
+}
+
 /** A single move's realistic expected damage roll -- the same fallback the
  * dashboard's damage bars already use (mostLikelyPercent when known, else
  * the middle of the min/max range) -- as opposed to maxPercent, which is
@@ -268,6 +321,13 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
   const foeActive = foeSideObj.active[0];
   if (!myActive || !foeActive) return undefined;
 
+  // What's actually selectable right now -- a Choice item, Encore, Disable,
+  // Taunt, Torment, or an out-of-PP move all narrow this below the full
+  // moveset (see getLegalMoveContext). Every move-sourced candidate below is
+  // filtered against it so the recommendation never suggests something the
+  // pending request won't actually let you choose.
+  const { legalIds, trapped } = getLegalMoveContext(session);
+
   const theirWorstCaseVsMe = Math.max(0, ...matchup.opponentMovesVsYou.map((m) => m.maxPercent));
   const myCurrentAvailableTurns = availableTurns(matchup.yours.hpPercent, theirWorstCaseVsMe);
   // For switch candidates below: the move they're expected to open a switch
@@ -288,6 +348,7 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
   // confirmed damaging move, no reconstruction needed. ---
   for (const move of matchup.yourMovesVsOpponent) {
     if (!move.confirmed) continue;
+    if (legalIds && !legalIds.has(toID(move.name))) continue;
     const directDamage = move.minPercent; // floor roll, matches the "guaranteed at worst" principle agreed in design
     const theirTurns = proposedOpponentTurns(matchup.opponent.hpPercent, directDamage, directDamage);
     candidates.push({
@@ -310,6 +371,7 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
   const attackMoveNames = matchup.yourMovesVsOpponent.filter((m) => m.confirmed).map((m) => m.name);
 
   for (const move of nonAttackMoves) {
+    if (legalIds && !legalIds.has(toID(move.name))) continue;
     if (move.category === 'boost') {
       if (myCurrentAvailableTurns < 1) continue; // can't survive the unprotected setup turn
       const delta = selfBoostsFor(move.name);
@@ -365,8 +427,20 @@ export function recommendAction(report: AnalysisReport, session: BattleSession, 
     }
   }
 
-  // --- Switch: bench matchups are already fully computed by the analyzer. ---
-  candidates.push(...buildSwitchCandidates(report.bench, mySideObj, matchup.opponent.hpPercent, expectedFirstHitVsMe));
+  // --- Switch: bench matchups are already fully computed by the analyzer,
+  // skipped entirely when trapped (Mean Look/Block/Spider Web, Shadow Tag/
+  // Arena Trap, ...) -- a plain Choice lock or Encore doesn't trap you, so
+  // switch candidates still apply there. ---
+  if (!trapped) {
+    candidates.push(...buildSwitchCandidates(report.bench, mySideObj, matchup.opponent.hpPercent, expectedFirstHitVsMe));
+  }
+
+  // --- Struggle: the pending request's only legal "move" is literally
+  // Struggle (every real move is out of PP) -- it never appears in the loops
+  // above since it isn't part of any Pokemon's actual moveset. ---
+  if (legalIds && legalIds.size === 1 && legalIds.has('struggle') && !candidates.some((c) => c.kind === 'attack' && toID(c.label) === 'struggle')) {
+    candidates.push(evaluateStruggle(myActive, foeActive, session, mySideObj, mySideId, repo, matchup.opponent.hpPercent, myCurrentAvailableTurns, isFaster));
+  }
 
   if (candidates.length === 0) return undefined;
 
